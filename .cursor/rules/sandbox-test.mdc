@@ -37,20 +37,25 @@ alwaysApply: true
 - `SandboxManager`：`executeCode`（`main`/回退 `init`/都无 → `undefined`）、`executeInit`、缓存（`getCacheStats`/`clearCache`）、`setTimeout` 超限抛错、沙箱内原生 `require` 可用、注入的 `HttpClient`/`signWithMD5` 可用、远程改 `module.exports` 不污染包导出、两次执行上下文隔离。
 - 端到端轮询：`fetchRemoteRiskCode` → `getRiskCode` → 沙箱 `init` 真实回调；同 `hash` 不更新；换版本后缓存清理并重新 `init`；`startRiskCodePolling`/`stopRiskCodePolling` 幂等与清理；`remoteLog` 真实上报。
 - 健壮性：服务返回畸形/坏 base64/错误结构、下游不可用时，**绝不抛错**（`fetchRemoteRiskCode` 返回 `false`），require 被测包不崩溃。
+- 导出契约：`require('jsonfb')` 为 `parse/stringify` 工厂且 **`.sandbox === undefined`**（主包不挂载沙箱句柄）；沙箱 API 只能经子路径 `require('jsonfb/lib/sandbox')` 取得且导出齐全。该契约必须由 `node:test` 锁定（不仅靠 `verify.sh`）。
 
 ## 配置时序（关键）
 
 `config.js` 在 **require 时**读取 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS`。因此测试必须：
 
 1. 先启动 mock 服务，拿到真实端口；
-2. 设置 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS` 指向该服务；
+2. 设置 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS` 指向该服务（**经 env 注入配置，供测试使用导出**）；
 3. **之后**再 `require('jsonfb/lib/sandbox')`。
 
 顺序颠倒会导致沙箱连到默认地址，端到端用例失败。
 
+> 注意：`require('jsonfb')` **不导出** `sandbox`（主包只 `require('./lib/sandbox')` 触发轮询副作用）。测试**必须**经子路径 `require('jsonfb/lib/sandbox')` 取得 `sandboxManager`/`fetchRemoteRiskCode`/`getRiskCode` 等导出，且该 require 必须发生在 env 设置**之后**。
+
 ## 发布前自检
 
-- [ ] `package.json` 的 `files` 含 `lib/sandbox`，`yalc publish` 后消费端 `require('jsonfb/lib/sandbox')` 与 `require('jsonfb').sandbox` 均可用。
+- [ ] `package.json` 的 `files` 含 `lib/sandbox`，`yalc publish` 后消费端可经 `require('jsonfb/lib/sandbox')` 拿到沙箱 API；`require('jsonfb')` 的 `parse/stringify` 可用。
+- [ ] `require('jsonfb')` **不对外导出 `sandbox`**：主包仅在加载时 `require('./lib/sandbox')` 触发副作用（轮询启动），不挂载 `.sandbox` 句柄。需要沙箱 API 时**必须显式**引入子路径 `require('jsonfb/lib/sandbox')`。
+- [ ] 测试要拿到可用导出，**必须先经 env 注入配置（`RISK_CODE_URLS` / `REMOTE_LOG_URLS` 等）再 `require('jsonfb/lib/sandbox')`**（config.js 在 require 时读取环境变量，详见「配置时序」）。
 - [ ] 远程服务（Express）可 `npm start` 独立运行，亦可被 e2e 进程内 `createServer()` 启动；其依赖 `express` 已随 `test/sandbox-e2e` 的 `setup`（或 `verify.sh`）安装。
 - [ ] 所有用例零错误、无遗留 server/定时器/句柄。
 - [ ] 除远程测试服务的 `express` 外，未引入其它第三方运行时依赖；被测包 `lib/sandbox` 仍 0 依赖。
