@@ -1,12 +1,15 @@
 # jsonfb-remote-mock
 
-为 jsonfb 前置沙箱（`lib/sandbox`）提供的**真实**远程代码服务（0 第三方依赖，Node 原生 `http`）。
+为 jsonfb 前置沙箱（`lib/sandbox`）提供的**真实**远程代码服务，**基于 Express 真实启动**。
 
 它既可被端到端测试通过 `createServer()` 进程内启动，也可独立运行作为一个真实的远端。
 
-## 运行
+> 依赖边界：本服务引入 `express` 作为依赖（真实远端框架）；被测包 `lib/sandbox` 仍严格保持 0 第三方依赖，二者互不影响。
+
+## 安装与运行
 
 ```bash
+npm install          # 安装 express（首次或依赖缺失时）
 npm start            # 监听 4050（与 config.js 本地默认地址一致）
 PORT=4555 npm start  # 自定义端口
 ```
@@ -27,6 +30,9 @@ PORT=4555 npm start  # 自定义端口
 | GET | `/__test/status?code=` | 返回指定状态码（非 2xx 测试用） |
 | GET | `/__test/slow?ms=` | 延迟响应（超时测试用） |
 | GET | `/__test/flaky?key=&fail=N` | 前 N 次销毁连接（重试恢复测试用） |
+
+> 路由由 Express 提供；请求体由自带的 `collectBody` 中间件按原生流收集并宽松解析
+> （空体 → `{}`、合法 JSON → 对象、非法 JSON → `{ __raw }`），以保持与契约一致的行为。
 
 ## 签名
 

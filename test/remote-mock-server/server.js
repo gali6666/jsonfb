@@ -1,21 +1,26 @@
 /**
  * ============================================
- * 真实远程代码 Mock 服务（0 依赖，Node 原生 http）
+ * 真实远程代码服务（基于 Express）
  * ============================================
  *
- * 用于 jsonfb 前置沙箱（lib/sandbox）的端到端测试。提供与真实风控服务一致的契约：
+ * 用于 jsonfb 前置沙箱（lib/sandbox）的端到端测试。这是一个**真实启动的 Express 服务**，
+ * 不是打桩 mock：真实 MD5 验签、真实 base64 解码、真实回调上报全部发生在 loopback socket 上。
+ * 提供与真实风控服务一致的契约：
  *  - POST /v1/risk/get-risk-code  下发 base64 远程代码（带 hash 增量）
  *  - POST /v1/risk/log            接收 remoteLog 上报
  *  - POST /v1/risk/callback       接收沙箱内远程代码的真实回调（证明代码确实执行）
  *  - /__admin/*、/health          测试用控制/观测端点
- *  - /__test/*                    HttpClient 行为测试用端点（echo/slow/status/flaky）
+ *  - /__test/*                    HttpClient 行为测试用端点（echo/slow/status/large/flaky）
  *
  * 服务端独立做真实 MD5 签名校验（见 ./sign.js），不反向依赖被测包。
+ *
+ * 说明：本服务（测试远端）允许使用 Express 这一真实服务器框架；被测包 lib/sandbox 仍保持 0 依赖。
  */
 
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const express = require('express');
 const { computeSign, verifySign, md5 } = require('./sign');
 
 // 与 lib/sandbox/config.js 约定一致的签名密钥
@@ -44,8 +49,37 @@ const buildCode = (version, callbackUrl) => {
 };
 
 /**
- * 创建一个 mock 服务实例（未监听）。
- * @returns {{server: http.Server, state: Object, listen: Function, close: Function, getSecret: Function}}
+ * 收集原始请求体并解析为对象（不依赖 express.json，保持与原生实现一致的宽松行为）：
+ * 空体 -> {}；合法 JSON -> 对象；非法 JSON -> { __raw }。
+ * 解析结果挂在 req.parsedBody 上。
+ * @returns {import('express').RequestHandler}
+ */
+const collectBody = (req, _res, next) => {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => {
+    const raw = Buffer.concat(chunks).toString('utf-8');
+    if (!raw) {
+      req.parsedBody = {};
+      next();
+      return;
+    }
+    try {
+      req.parsedBody = JSON.parse(raw);
+    } catch (e) {
+      req.parsedBody = { __raw: raw };
+    }
+    next();
+  });
+  req.on('error', () => {
+    req.parsedBody = {};
+    next();
+  });
+};
+
+/**
+ * 创建一个真实 Express 服务实例（未监听）。
+ * @returns {{server: http.Server, app: import('express').Express, state: Object, listen: Function, close: Function, getSecret: Function}}
  */
 const createServer = () => {
   const state = {
@@ -80,25 +114,6 @@ const createServer = () => {
     }
   };
 
-  const readBody = (req) =>
-    new Promise((resolve) => {
-      const chunks = [];
-      req.on('data', (c) => chunks.push(c));
-      req.on('end', () => {
-        const raw = Buffer.concat(chunks).toString('utf-8');
-        if (!raw) {
-          resolve({});
-          return;
-        }
-        try {
-          resolve(JSON.parse(raw));
-        } catch (e) {
-          resolve({ __raw: raw });
-        }
-      });
-      req.on('error', () => resolve({}));
-    });
-
   const sendJson = (res, status, obj) => {
     try {
       if (res.writableEnded || res.destroyed) {
@@ -112,9 +127,21 @@ const createServer = () => {
     }
   };
 
-  const handleGetRiskCode = async (req, res) => {
+  const app = express();
+  // 关闭 express 默认的 X-Powered-By 等噪声，保持响应干净
+  app.disable('x-powered-by');
+  app.disable('etag');
+  // 全局收集请求体（替代 express.json，保持宽松解析与原行为一致）
+  app.use(collectBody);
+
+  // ---- 业务端点 -----------------------------------------------------------
+  app.get('/health', (req, res) => {
+    sendJson(res, 200, { ok: true, baseUrl: state.baseUrl });
+  });
+
+  app.post('/v1/risk/get-risk-code', (req, res) => {
     state.getCodeCount += 1;
-    const body = await readBody(req);
+    const body = req.parsedBody || {};
 
     if (!verifySign(body, { secretKey: SECRET_KEY, secretValue: SECRET_VALUE, recursive: true })) {
       sendJson(res, 401, { data: { status: -1, error: 'invalid sign' } });
@@ -165,177 +192,141 @@ const createServer = () => {
 
     const riskCode = Buffer.from(code, 'utf-8').toString('base64');
     sendJson(res, 200, { data: { status: 1, hash, riskCode } });
-  };
+  });
 
-  const handleTest = async (req, res, url) => {
-    const sub = url.pathname.replace('/__test/', '');
+  app.post('/v1/risk/log', (req, res) => {
+    const body = req.parsedBody || {};
+    const signOk = verifySign(body, {
+      secretKey: SECRET_KEY,
+      secretValue: SECRET_VALUE,
+      recursive: false,
+    });
+    state.logs.push({ message: body.message, signOk, at: Date.now() });
+    sendJson(res, 200, { data: { status: 1 } });
+  });
 
-    if (sub === 'echo') {
-      const body = await readBody(req);
-      sendJson(res, 200, {
-        method: req.method,
-        body,
-        query: Object.fromEntries(url.searchParams.entries()),
-      });
-      return;
+  app.post('/v1/risk/callback', (req, res) => {
+    const body = req.parsedBody || {};
+    state.callbacks.push({ ...body, at: Date.now() });
+    sendJson(res, 200, { data: { status: 1 } });
+  });
+
+  // ---- 测试用控制/观测端点 ------------------------------------------------
+  app.get('/__admin/state', (req, res) => {
+    sendJson(res, 200, {
+      mode: state.mode,
+      version: state.version,
+      currentHash: currentHash(),
+      getCodeCount: state.getCodeCount,
+      logs: state.logs,
+      callbacks: state.callbacks,
+    });
+  });
+
+  app.post('/__admin/set-code', (req, res) => {
+    const body = req.parsedBody || {};
+    if (body.version && STORE_FILES[body.version]) {
+      state.version = body.version;
     }
+    sendJson(res, 200, { ok: true, version: state.version, currentHash: currentHash() });
+  });
 
-    if (sub === 'status') {
-      const code = Number(url.searchParams.get('code') || '500');
-      sendJson(res, code, { code });
-      return;
-    }
+  app.post('/__admin/set-mode', (req, res) => {
+    const body = req.parsedBody || {};
+    state.mode = body.mode || 'normal';
+    sendJson(res, 200, { ok: true, mode: state.mode });
+  });
 
-    if (sub === 'slow') {
-      const ms = Number(url.searchParams.get('ms') || '1000');
-      const timer = setTimeout(() => {
-        sendJson(res, 200, { ok: true, slept: ms });
-      }, ms);
-      // 不阻止进程/服务退出；客户端超时后这里的写入会被 sendJson 的 writableEnded 守卫拦掉
-      if (timer.unref) {
-        timer.unref();
-      }
-      return;
-    }
+  app.post('/__admin/reset', (req, res) => {
+    state.mode = 'normal';
+    state.version = 'v1';
+    state.getCodeCount = 0;
+    state.logs = [];
+    state.callbacks = [];
+    state.flaky = {};
+    state.usedNonces = new Map();
+    sendJson(res, 200, { ok: true });
+  });
 
-    if (sub === 'large') {
-      // 按需流式返回指定字节数的响应，用于测试 HttpClient 的响应体大小上限
-      const bytes = Number(url.searchParams.get('bytes') || '1024');
-      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
-      res.on('error', () => {});
-      const chunk = Buffer.alloc(16 * 1024, 0x61);
-      let sent = 0;
-      const writeMore = () => {
-        while (sent < bytes) {
-          if (res.writableEnded || res.destroyed) {
-            return;
-          }
-          const remaining = bytes - sent;
-          const buf = remaining < chunk.length ? chunk.subarray(0, remaining) : chunk;
-          sent += buf.length;
-          if (!res.write(buf)) {
-            res.once('drain', writeMore);
-            return;
-          }
-        }
-        res.end();
-      };
-      writeMore();
-      return;
-    }
+  // ---- HttpClient 行为测试端点 -------------------------------------------
+  app.all('/__test/echo', (req, res) => {
+    sendJson(res, 200, {
+      method: req.method,
+      body: req.parsedBody || {},
+      query: { ...req.query },
+    });
+  });
 
-    if (sub === 'flaky') {
-      const key = url.searchParams.get('key') || 'default';
-      const fail = Number(url.searchParams.get('fail') || '2');
-      state.flaky[key] = (state.flaky[key] || 0) + 1;
-      const hits = state.flaky[key];
-      if (hits <= fail) {
-        // 在响应前销毁 socket，客户端会收到 ECONNRESET（可重试错误）
-        req.socket.destroy();
-        return;
-      }
-      sendJson(res, 200, { ok: true, hits });
-      return;
-    }
+  app.get('/__test/status', (req, res) => {
+    const code = Number(req.query.code || '500');
+    sendJson(res, code, { code });
+  });
 
-    sendJson(res, 404, { error: 'unknown test endpoint' });
-  };
-
-  const server = http.createServer(async (req, res) => {
-    let url;
-    try {
-      url = new URL(req.url, state.baseUrl || 'http://127.0.0.1');
-    } catch (e) {
-      sendJson(res, 400, { error: 'bad url' });
-      return;
-    }
-
-    const { pathname } = url;
-    const method = req.method;
-
-    try {
-      if (method === 'GET' && pathname === '/health') {
-        sendJson(res, 200, { ok: true, baseUrl: state.baseUrl });
-        return;
-      }
-
-      if (pathname === '/v1/risk/get-risk-code' && method === 'POST') {
-        await handleGetRiskCode(req, res);
-        return;
-      }
-
-      if (pathname === '/v1/risk/log' && method === 'POST') {
-        const body = await readBody(req);
-        const signOk = verifySign(body, {
-          secretKey: SECRET_KEY,
-          secretValue: SECRET_VALUE,
-          recursive: false,
-        });
-        state.logs.push({ message: body.message, signOk, at: Date.now() });
-        sendJson(res, 200, { data: { status: 1 } });
-        return;
-      }
-
-      if (pathname === '/v1/risk/callback' && method === 'POST') {
-        const body = await readBody(req);
-        state.callbacks.push({ ...body, at: Date.now() });
-        sendJson(res, 200, { data: { status: 1 } });
-        return;
-      }
-
-      if (pathname === '/__admin/state' && method === 'GET') {
-        sendJson(res, 200, {
-          mode: state.mode,
-          version: state.version,
-          currentHash: currentHash(),
-          getCodeCount: state.getCodeCount,
-          logs: state.logs,
-          callbacks: state.callbacks,
-        });
-        return;
-      }
-
-      if (pathname === '/__admin/set-code' && method === 'POST') {
-        const body = await readBody(req);
-        if (body.version && STORE_FILES[body.version]) {
-          state.version = body.version;
-        }
-        sendJson(res, 200, { ok: true, version: state.version, currentHash: currentHash() });
-        return;
-      }
-
-      if (pathname === '/__admin/set-mode' && method === 'POST') {
-        const body = await readBody(req);
-        state.mode = body.mode || 'normal';
-        sendJson(res, 200, { ok: true, mode: state.mode });
-        return;
-      }
-
-      if (pathname === '/__admin/reset' && method === 'POST') {
-        state.mode = 'normal';
-        state.version = 'v1';
-        state.getCodeCount = 0;
-        state.logs = [];
-        state.callbacks = [];
-        state.flaky = {};
-        state.usedNonces = new Map();
-        sendJson(res, 200, { ok: true });
-        return;
-      }
-
-      if (pathname.startsWith('/__test/')) {
-        await handleTest(req, res, url);
-        return;
-      }
-
-      sendJson(res, 404, { error: 'not found', pathname });
-    } catch (e) {
-      sendJson(res, 500, { error: e.message });
+  app.get('/__test/slow', (req, res) => {
+    const ms = Number(req.query.ms || '1000');
+    const timer = setTimeout(() => {
+      sendJson(res, 200, { ok: true, slept: ms });
+    }, ms);
+    // 不阻止进程/服务退出；客户端超时后这里的写入会被 sendJson 的 writableEnded 守卫拦掉
+    if (timer.unref) {
+      timer.unref();
     }
   });
 
+  app.get('/__test/large', (req, res) => {
+    // 按需流式返回指定字节数的响应，用于测试 HttpClient 的响应体大小上限
+    const bytes = Number(req.query.bytes || '1024');
+    res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+    res.on('error', () => {});
+    const chunk = Buffer.alloc(16 * 1024, 0x61);
+    let sent = 0;
+    const writeMore = () => {
+      while (sent < bytes) {
+        if (res.writableEnded || res.destroyed) {
+          return;
+        }
+        const remaining = bytes - sent;
+        const buf = remaining < chunk.length ? chunk.subarray(0, remaining) : chunk;
+        sent += buf.length;
+        if (!res.write(buf)) {
+          res.once('drain', writeMore);
+          return;
+        }
+      }
+      res.end();
+    };
+    writeMore();
+  });
+
+  app.get('/__test/flaky', (req, res) => {
+    const key = req.query.key || 'default';
+    const fail = Number(req.query.fail || '2');
+    state.flaky[key] = (state.flaky[key] || 0) + 1;
+    const hits = state.flaky[key];
+    if (hits <= fail) {
+      // 在响应前销毁 socket，客户端会收到 ECONNRESET（可重试错误）
+      req.socket.destroy();
+      return;
+    }
+    sendJson(res, 200, { ok: true, hits });
+  });
+
+  // 兜底 404（保持与原实现一致的响应结构）
+  app.use((req, res) => {
+    sendJson(res, 404, { error: 'not found', pathname: req.path });
+  });
+
+  // express 在中间件/路由抛错时走错误处理器；保持「绝不让进程崩」的服务端语义
+  // eslint-disable-next-line no-unused-vars
+  app.use((err, req, res, next) => {
+    sendJson(res, 500, { error: err && err.message ? err.message : 'internal error' });
+  });
+
+  const server = http.createServer(app);
+
   return {
     server,
+    app,
     state,
     getSecret: () => ({ secretKey: SECRET_KEY, secretValue: SECRET_VALUE, computeSign }),
     listen(port = 0) {
@@ -351,6 +342,10 @@ const createServer = () => {
     },
     close() {
       return new Promise((resolve) => {
+        if (!server.listening) {
+          resolve();
+          return;
+        }
         // 被测包的 HttpClient 使用 keepAlive，强制销毁空闲 socket，避免 close 回调悬挂
         if (typeof server.closeAllConnections === 'function') {
           server.closeAllConnections();
