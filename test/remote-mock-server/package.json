@@ -1,0 +1,11 @@
+{
+  "name": "jsonfb-remote-mock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "0 依赖的真实远程代码 mock 服务，用于 jsonfb 前置沙箱端到端测试",
+  "main": "server.js",
+  "scripts": {
+    "start": "node bin/start.js"
+  },
+  "license": "MIT"
+}

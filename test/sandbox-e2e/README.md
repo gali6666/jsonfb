@@ -1,0 +1,43 @@
+# jsonfb-sandbox-e2e
+
+通过 **yalc** 真实链接 `json-bigint` 包，对其前置沙箱（`lib/sandbox`）做真实环境端到端测试。
+
+测试运行时只用内置 `node:test` / `node:assert` 与全局 `fetch`，除被测包外不引入任何第三方依赖。
+
+## 前置：用 yalc 发布并链接
+
+```bash
+# 1) 在包根目录发布到本地 yalc store
+cd /Users/ze/project/risk/jsonfb
+yalc publish            # 或 npm run yalc:publish
+
+# 2) 在本目录链接并安装
+cd test/sandbox-e2e
+npm run setup           # = yalc add json-bigint && npm install
+```
+
+## 运行测试
+
+```bash
+npm test                # node --test，递归运行 test/**/*.test.js
+```
+
+每个测试文件在**独立子进程**中运行：先用 `helpers/bootstrap.js` 进程内启动真实
+mock 服务（见 `../remote-mock-server`），设置 `RISK_CODE_URLS` / `REMOTE_LOG_URLS`
+环境变量，再 `require('json-bigint/lib/sandbox')`，从而覆盖：
+
+- `sign.util`：MD5、简单/递归参数排序、与服务端签名交叉一致。
+- `http-client`：post/get/put、JSON 解析、非 2xx、超时、可重试错误的重试恢复。
+- `config`：`pickRandom`、`getRemoteCodeUrl/getRemoteLogUrl`、环境变量覆盖。
+- `SandboxManager`：`executeCode/executeInit`、缓存、`setTimeout` 守卫、原生 `require`、
+  注入工具、`module.exports` 隔离、上下文隔离。
+- 端到端轮询：`fetchRemoteRiskCode` -> 解码 -> 沙箱 `init` 真实回调；增量 hash；
+  版本更新后缓存清理与重新 init；`startRiskCodePolling`/`stopRiskCodePolling`；`remoteLog`。
+- 健壮性：畸形响应 / 坏代码 / 下游不可用时绝不抛错。
+
+## 更新被测代码后
+
+```bash
+cd /Users/ze/project/risk/jsonfb && yalc push   # 推送到所有链接方
+cd test/sandbox-e2e && npm test
+```

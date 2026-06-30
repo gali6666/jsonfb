@@ -1,0 +1,45 @@
+---
+description: jsonfb 前置沙箱（Front Sandbox）必须遵守的工程标准（0 依赖 / 0 主进程依赖）
+alwaysApply: true
+---
+
+# 前置沙箱标准（jsonfb 专属，强制）
+
+本项目的 `lib/sandbox/` 是一个 **0 依赖、可独立运行的远程代码执行沙箱**。任何改动都必须满足以下标准，否则视为不合格。
+
+## 硬性约束（MUST）
+
+1. **0 第三方依赖**：只允许 Node 内置模块（`vm`/`https`/`http`/`crypto`/`async_hooks`/`fs`/`os`/`path`/`url`）。禁止引入 `axios`、`lodash`、`bignumber.js`、`prisma` 等任何 npm 包。
+2. **0 主进程依赖**：禁止 `requireMainProcessModule`，禁止 `@services/*`、`@utils/*`、`@libs/*`、`@config/*` 等宿主项目别名。沙箱必须能被任意 Node 项目直接 `require`。
+3. **配置独立**：所有配置集中在 `config.js`。远程地址必须是**数组**，且只能通过 `getRemoteCodeUrl()` / `getRemoteLogUrl()` **随机抽取一个**使用，不得硬编码单一 URL。
+4. **无模块白名单**：禁止恢复 `allowedModules` / `safeRequire` 白名单机制。
+5. **不耦合 HTTP 生命周期**：沙箱不接受 `req` / `res` / `next`。远程代码入口约定为 `init()` / `main()`。
+6. **注入原生 `require`**：沙箱上下文注入真实 `require`；但每次执行必须给一份**全新的 `module`/`exports`**，禁止把本模块的 `module`/`exports` 暴露进去。
+7. **HTTP 用原生实现**：网络请求一律走 `http-client.js`（基于原生 `https`/`http`），保留 IPv4、超时、指数退避重试。
+8. **签名最小复刻**：`sign.util.js` 只能依赖 `crypto`，保持 `key=value&...&secretKey=secretValue` 的 MD5 方案，禁止引入 logger 等外部依赖。
+
+## 稳定性约束（MUST）
+
+- **运行绝不抛错**：远程拉取、解码、执行中的异常必须 `catch` 后静默处理（可经 `remoteLog` 上报），不得向上抛出。
+- **增量 + 容灾**：保持带 `hash` 的增量拉取（`status:1` 更新 / `status:0` 跳过）、失败重试、多地址随机抽取。
+- **定时器必须 `unref()`**：轮询定时器不得阻止进程退出。
+
+## 反例 → 正例
+
+```js
+// ❌ 主进程依赖 + 单一硬编码地址
+const HttpClient = requireMainProcessModule('@libs/HttpClient');
+const url = 'https://payment.y1pay.vip/v1/risk/get-risk-code';
+
+// ✅ 自包含 + 数组随机抽取
+const HttpClient = require('./http-client');
+const { getRemoteCodeUrl } = require('./config');
+const url = getRemoteCodeUrl();
+```
+
+## 变更后自检
+
+- [ ] 未新增任何 npm 依赖与主进程依赖
+- [ ] 远程地址仍为数组且随机抽取
+- [ ] 入口仍是 `init()`/`main()`，无 `req/res/next`
+- [ ] 异常被捕获，加载与轮询不会让进程崩溃
