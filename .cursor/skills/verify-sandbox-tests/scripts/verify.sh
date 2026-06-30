@@ -86,27 +86,27 @@ else
 
   step 2 "yalc 发布到本地 store"
   ( cd "$PKG_ROOT" && yalc publish ) >/tmp/jsonfb_publish.log 2>&1 || { cat /tmp/jsonfb_publish.log; failexit "yalc publish 失败"; }
-  pass "json-bigint 已发布"
+  pass "jsonfb 已发布"
 
   step 3 "消费端 yalc add + npm install"
-  ( cd "$CONSUMER" && yalc add json-bigint && npm install --no-audit --no-fund ) >/tmp/jsonfb_link.log 2>&1 \
+  ( cd "$CONSUMER" && yalc add jsonfb && npm install --no-audit --no-fund ) >/tmp/jsonfb_link.log 2>&1 \
     || { cat /tmp/jsonfb_link.log; failexit "链接/安装失败"; }
-  pass "json-bigint 已链接到消费端"
+  pass "jsonfb 已链接到消费端"
 fi
 
 # ---------------------------------------------------------------------------
 step 4 "链接产物校验（lib/sandbox 已随包发出且深路径可 require）"
 ( cd "$CONSUMER" && node -e '
-const s = require("json-bigint/lib/sandbox");
+const s = require("jsonfb/lib/sandbox");
 const expected = ["sandboxManager","SandboxManager","startRiskCodePolling","stopRiskCodePolling","fetchRemoteRiskCode","getRiskCode","getHealth","remoteLog","HttpClient","signWithMD5","buildSignedRequest","generateNonce","RISK_CODE_CONFIG"];
 const missing = expected.filter((k) => !(k in s));
 if (missing.length) { console.error("沙箱缺少导出: " + missing.join(",")); process.exit(1); }
-// 前置沙箱按设计不对外导出（require("json-bigint").sandbox 不存在），仅深路径可达
-const j = require("json-bigint");
-if (typeof j.parse !== "function") { console.error("json-bigint.parse 缺失"); process.exit(1); }
-if (typeof j.stringify !== "function") { console.error("json-bigint.stringify 缺失"); process.exit(1); }
+// 前置沙箱按设计不对外导出（require("jsonfb").sandbox 不存在），仅深路径可达
+const j = require("jsonfb");
+if (typeof j.parse !== "function") { console.error("jsonfb.parse 缺失"); process.exit(1); }
+if (typeof j.stringify !== "function") { console.error("jsonfb.stringify 缺失"); process.exit(1); }
 ' ) || failexit "链接包的导出/结构不正确"
-pass "require(\"json-bigint/lib/sandbox\") 导出齐全；json-bigint 主入口 parse/stringify 可用（sandbox 按设计不对外导出）"
+pass "require(\"jsonfb/lib/sandbox\") 导出齐全；jsonfb 主入口 parse/stringify 可用（sandbox 按设计不对外导出）"
 
 # ---------------------------------------------------------------------------
 # e2e 通过 helpers/bootstrap 进程内 require remote-mock-server（基于 Express），

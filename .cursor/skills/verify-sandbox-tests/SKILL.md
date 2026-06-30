@@ -25,8 +25,8 @@ bash .cursor/skills/verify-sandbox-tests/scripts/verify.sh
 | --- | --- | --- |
 | 1 | `package.json` 的 `files` 含 `lib/sandbox`；`index.js` 加载 `./lib/sandbox`（副作用启动，按设计不对外导出） | 发布产物不会丢失沙箱、import 即触发轮询 |
 | 2 | `yalc publish` 到本地 store | 发布成功 |
-| 3 | 消费端 `yalc add json-bigint && npm install`（并为基于 Express 的远程服务安装 `express`） | 真实链接成功（非相对路径），远程服务依赖就绪 |
-| 4 | 链接后 `require('json-bigint/lib/sandbox')` 导出齐全；`require('json-bigint')` 的 `parse/stringify` 可用（`sandbox` 按设计不对外导出） | 沙箱随包发出且深路径可被任意项目 require |
+| 3 | 消费端 `yalc add jsonfb && npm install`（并为基于 Express 的远程服务安装 `express`） | 真实链接成功（非相对路径），远程服务依赖就绪 |
+| 4 | 链接后 `require('jsonfb/lib/sandbox')` 导出齐全；`require('jsonfb')` 的 `parse/stringify` 可用（`sandbox` 按设计不对外导出） | 沙箱随包发出且深路径可被任意项目 require |
 | 5 | `node --test` 全量；退出码 0 且未超时 | 用例全绿、进程干净退出（无泄漏/未关服务/定时器已 unref） |
 | 6 | `test/remote-mock-server`（Express）可独立 `node bin/start.js` 且 `/health` 正常 | 远程代码服务（真实 Express）可独立运行 |
 
@@ -61,8 +61,8 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
 ```
 - [ ] 1 包结构：files 含 lib/sandbox；index.js 有 require('./lib/sandbox')（按设计不对外导出 sandbox）
 - [ ] 2 cd <pkg> && yalc publish 成功
-- [ ] 3 cd test/sandbox-e2e && yalc add json-bigint && npm install 成功；cd test/remote-mock-server && npm install（装 express）成功
-- [ ] 4 require('json-bigint/lib/sandbox') 导出齐全；require('json-bigint').parse/stringify 可用（sandbox 不对外导出）
+- [ ] 3 cd test/sandbox-e2e && yalc add jsonfb && npm install 成功；cd test/remote-mock-server && npm install（装 express）成功
+- [ ] 4 require('jsonfb/lib/sandbox') 导出齐全；require('jsonfb').parse/stringify 可用（sandbox 不对外导出）
 - [ ] 5 cd test/sandbox-e2e && node --test → fail 0、退出码 0、无挂起
 - [ ] 6 cd test/remote-mock-server && PORT=4599 node bin/start.js → /health 返回 {ok:true}（基于 Express）
 ```

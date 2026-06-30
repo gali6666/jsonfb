@@ -3,7 +3,7 @@
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert');
 
-const HttpClient = require('json-bigint/lib/sandbox/http-client');
+const HttpClient = require('jsonfb/lib/sandbox/http-client');
 const { startServer } = require('../helpers/bootstrap');
 
 describe('http-client (real loopback server)', () => {

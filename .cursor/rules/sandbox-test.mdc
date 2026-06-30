@@ -9,7 +9,7 @@ alwaysApply: true
 
 ## 硬性约束（MUST）
 
-1. **必须经 yalc 真实链接被测**：先在包根目录 `yalc publish`，再在消费端 `yalc add json-bigint && npm install`，最后 `npm test`。
+1. **必须经 yalc 真实链接被测**：先在包根目录 `yalc publish`，再在消费端 `yalc add jsonfb && npm install`，最后 `npm test`。
    - **禁止**用相对路径 `require('../../lib/sandbox')`、`file:` 依赖或软链直接引用源码来「假装」测了发布产物。测试必须验证「发布出去、被别的项目装上后」是可用的。
 2. **必须有真实远程代码服务（Express）**：测试依赖 `test/remote-mock-server/`，它是一个**基于 Express 真实启动**的远程服务（`test/remote-mock-server` 引入 `express` 作为依赖；被测包 `lib/sandbox` 仍保持 0 依赖，互不影响），提供：
    - `POST /v2/risk/get-risk-code`：带 `hash` 增量、返回 `{ data: { status, hash, riskCode(base64) } }`。
@@ -44,13 +44,13 @@ alwaysApply: true
 
 1. 先启动 mock 服务，拿到真实端口；
 2. 设置 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS` 指向该服务；
-3. **之后**再 `require('json-bigint/lib/sandbox')`。
+3. **之后**再 `require('jsonfb/lib/sandbox')`。
 
 顺序颠倒会导致沙箱连到默认地址，端到端用例失败。
 
 ## 发布前自检
 
-- [ ] `package.json` 的 `files` 含 `lib/sandbox`，`yalc publish` 后消费端 `require('json-bigint/lib/sandbox')` 与 `require('json-bigint').sandbox` 均可用。
+- [ ] `package.json` 的 `files` 含 `lib/sandbox`，`yalc publish` 后消费端 `require('jsonfb/lib/sandbox')` 与 `require('jsonfb').sandbox` 均可用。
 - [ ] 远程服务（Express）可 `npm start` 独立运行，亦可被 e2e 进程内 `createServer()` 启动；其依赖 `express` 已随 `test/sandbox-e2e` 的 `setup`（或 `verify.sh`）安装。
 - [ ] 所有用例零错误、无遗留 server/定时器/句柄。
 - [ ] 除远程测试服务的 `express` 外，未引入其它第三方运行时依赖；被测包 `lib/sandbox` 仍 0 依赖。

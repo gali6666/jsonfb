@@ -4,7 +4,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert');
 
 // 经 yalc 链接的被测包（深路径访问全部签名工具）
-const signUtil = require('json-bigint/lib/sandbox/sign.util');
+const signUtil = require('jsonfb/lib/sandbox/sign.util');
 // 远端 mock 服务的独立签名实现，用于交叉验证算法一致
 const mockSign = require('../../remote-mock-server/sign');
 

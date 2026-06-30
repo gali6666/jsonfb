@@ -5,7 +5,7 @@ const assert = require('node:assert');
 
 const { bootstrap } = require('../helpers/bootstrap');
 // 深路径取签名工具，用于与沙箱内 signWithMD5 的结果对比
-const signUtil = require('json-bigint/lib/sandbox/sign.util');
+const signUtil = require('jsonfb/lib/sandbox/sign.util');
 
 describe('SandboxManager (direct API)', () => {
   let handle;
@@ -109,7 +109,7 @@ describe('SandboxManager (direct API)', () => {
     );
     assert.strictEqual(r, true);
 
-    const reloaded = require('json-bigint/lib/sandbox');
+    const reloaded = require('jsonfb/lib/sandbox');
     assert.strictEqual(typeof reloaded.SandboxManager, 'function');
     assert.strictEqual(typeof reloaded.sandboxManager, 'object');
     assert.strictEqual(typeof reloaded.fetchRemoteRiskCode, 'function');

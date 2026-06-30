@@ -1,7 +1,7 @@
-# json-bigint
+# jsonfb
 
-[![Build Status](https://secure.travis-ci.org/sidorares/json-bigint.png)](http://travis-ci.org/sidorares/json-bigint)
-[![NPM](https://nodei.co/npm/json-bigint.png?downloads=true&stars=true)](https://nodei.co/npm/json-bigint/)
+[![Build Status](https://secure.travis-ci.org/sidorares/jsonfb.png)](http://travis-ci.org/sidorares/jsonfb)
+[![NPM](https://nodei.co/npm/jsonfb.png?downloads=true&stars=true)](https://nodei.co/npm/jsonfb/)
 
 JSON.parse/stringify with bigints support. Based on Douglas Crockford [JSON.js](https://github.com/douglascrockford/JSON-js) package and [bignumber.js](https://github.com/MikeMcl/bignumber.js) library.
 
@@ -14,7 +14,7 @@ While most JSON parsers assume numeric values have same precision restrictions a
 example:
 
 ```js
-var JSONbig = require('json-bigint');
+var JSONbig = require('jsonfb');
 
 var json = '{ "value" : 9223372036854775807, "v2": 123 }';
 console.log('Input:', json);
@@ -60,8 +60,8 @@ Setting options.strict = true will fail-fast on such duplicate-key occurances an
 example:
 
 ```js
-var JSONbig = require('json-bigint');
-var JSONstrict = require('json-bigint')({ strict: true });
+var JSONbig = require('jsonfb');
+var JSONstrict = require('jsonfb')({ strict: true });
 
 var dupkeys = '{ "dupkey": "value 1", "dupkey": "value 2"}';
 console.log('\n\nDuplicate Key test with both lenient and strict JSON parsing');
@@ -99,8 +99,8 @@ Note that this is a dangerous behavior as it breaks the default functionality of
 example:
 
 ```js
-var JSONbig = require('json-bigint');
-var JSONbigString = require('json-bigint')({ storeAsString: true });
+var JSONbig = require('jsonfb');
+var JSONbigString = require('jsonfb')({ storeAsString: true });
 var key = '{ "key": 1234567890123456789 }';
 console.log('\n\nStoring the BigInt as a string, instead of a BigNumber');
 console.log('Input:', key);
@@ -129,8 +129,8 @@ Specifies if parser uses native BigInt instead of bignumber.js
 example:
 
 ```js
-var JSONbig = require('json-bigint');
-var JSONbigNative = require('json-bigint')({ useNativeBigInt: true });
+var JSONbig = require('jsonfb');
+var JSONbigNative = require('jsonfb')({ useNativeBigInt: true });
 var key = '{ "key": 993143214321423154315154321 }';
 console.log(`\n\nStoring the Number as native BigInt, instead of a BigNumber`);
 console.log('Input:', key);
@@ -161,8 +161,8 @@ Note that this is a dangerous behavior as it breaks the default functionality of
 example:
 
 ```js
-var JSONbig = require('json-bigint');
-var JSONbigAlways = require('json-bigint')({ alwaysParseAsBig: true });
+var JSONbig = require('jsonfb');
+var JSONbigAlways = require('jsonfb')({ alwaysParseAsBig: true });
 var key = '{ "key": 123 }'; // there is no need for BigNumber by default, but we're forcing it
 console.log(`\n\nStoring the Number as a BigNumber, instead of a Number`);
 console.log('Input:', key);
@@ -188,7 +188,7 @@ If you want to force all numbers to be parsed as native `BigInt`
 (you probably do! Otherwise any calulations become a real headache):
 
 ```js
-var JSONbig = require('json-bigint')({
+var JSONbig = require('jsonfb')({
   alwaysParseAsBig: true,
   useNativeBigInt: true,
 });
@@ -206,7 +206,7 @@ is not vulnerable to prototype poisoning attacks.
 example:
 
 ```js
-var JSONbigAlways = require('json-bigint')({ protoAction: 'ignore' });
+var JSONbigAlways = require('jsonfb')({ protoAction: 'ignore' });
 const user = JSONbig.parse('{ "__proto__": { "admin": true }, "id": 12345 }');
 // => result is { id: 12345 }
 ```

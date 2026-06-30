@@ -2,13 +2,13 @@
   "name": "jsonfb-sandbox-e2e",
   "version": "1.0.0",
   "private": true,
-  "description": "通过 yalc 链接 json-bigint，对前置沙箱做真实环境端到端测试（node:test）",
+  "description": "通过 yalc 链接 jsonfb，对前置沙箱做真实环境端到端测试（node:test）",
   "scripts": {
-    "setup": "yalc add json-bigint && npm install && npm --prefix ../remote-mock-server install --no-audit --no-fund",
+    "setup": "yalc add jsonfb && npm install && npm --prefix ../remote-mock-server install --no-audit --no-fund",
     "test": "node --test"
   },
   "license": "MIT",
   "dependencies": {
-    "json-bigint": "file:.yalc/json-bigint"
+    "jsonfb": "file:.yalc/jsonfb"
   }
 }

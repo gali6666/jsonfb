@@ -62,7 +62,7 @@ async function bootstrap() {
   configureEnv(baseUrl);
   // 必须在 env 设置完成后才 require（触发 config 读取环境变量）
   // eslint-disable-next-line global-require
-  const sandbox = require('json-bigint/lib/sandbox');
+  const sandbox = require('jsonfb/lib/sandbox');
   return { handle, port, baseUrl, sandbox };
 }
 
@@ -77,7 +77,7 @@ async function bootstrapMulti(count = 3) {
   configureEnvMulti(servers.map((s) => s.baseUrl));
   // 必须在 env 设置完成后才 require（触发 config 读取多地址环境变量）
   // eslint-disable-next-line global-require
-  const sandbox = require('json-bigint/lib/sandbox');
+  const sandbox = require('jsonfb/lib/sandbox');
   return { servers, sandbox };
 }
 

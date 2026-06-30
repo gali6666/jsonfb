@@ -4,8 +4,8 @@ const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert');
 
 // 经 yalc 链接的被测包：直接用其 HttpClient + 签名工具构造请求
-const HttpClient = require('json-bigint/lib/sandbox/http-client');
-const signUtil = require('json-bigint/lib/sandbox/sign.util');
+const HttpClient = require('jsonfb/lib/sandbox/http-client');
+const signUtil = require('jsonfb/lib/sandbox/sign.util');
 const { startServer } = require('../helpers/bootstrap');
 
 const SECRET = {
