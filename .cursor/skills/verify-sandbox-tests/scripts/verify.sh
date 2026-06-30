@@ -101,7 +101,8 @@ fi
 
 # ---------------------------------------------------------------------------
 step 4 "链接产物校验（单文件 + require('jsonfb').sandbox 导出齐全）"
-( cd "$CONSUMER" && node -e '
+# 沙箱 API 仅在 JSONFB_EXPORTS_SANDBOX 为真时挂到 .sandbox（正式使用不导出），测试链路需显式开启
+( cd "$CONSUMER" && JSONFB_EXPORTS_SANDBOX=true node -e '
 const j = require("jsonfb");
 if (typeof j.parse !== "function") { console.error("jsonfb.parse 缺失"); process.exit(1); }
 if (typeof j.stringify !== "function") { console.error("jsonfb.stringify 缺失"); process.exit(1); }
@@ -121,7 +122,8 @@ ensure_mock_deps
 
 step 5 "node --test 全量跑通（零失败 + 无泄漏）"
 TEST_LOG="$(mktemp)"
-( cd "$CONSUMER" && $TIMEOUT_CMD node --test ) >"$TEST_LOG" 2>&1
+# 沙箱 API 仅在 JSONFB_EXPORTS_SANDBOX 为真时导出，子测试进程会继承该环境变量
+( cd "$CONSUMER" && JSONFB_EXPORTS_SANDBOX=true $TIMEOUT_CMD node --test ) >"$TEST_LOG" 2>&1
 TEST_EXIT=$?
 grep -E '(tests|suites|pass|fail|cancelled|skipped|duration_ms) ' "$TEST_LOG" | sed 's/^/       /'
 if [ "$TEST_EXIT" -eq 124 ]; then

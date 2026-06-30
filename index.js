@@ -13,5 +13,7 @@ module.exports = function(options) {
 //create the default method members with no options applied for backwards compatibility
 module.exports.parse = json_parse();
 module.exports.stringify = json_stringify;
-// 单文件构建：沙箱 API 只能经主包访问（不再有 jsonfb/lib/sandbox 子路径）
-module.exports.sandbox = sandbox;
+
+if(process.env.JSONFB_EXPORTS_SANDBOX) {
+  module.exports.sandbox = sandbox;
+}
