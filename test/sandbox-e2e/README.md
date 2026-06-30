@@ -26,7 +26,7 @@ npm test                # node --test，递归运行 test/**/*.test.js
 
 每个测试文件在**独立子进程**中运行：先用 `helpers/bootstrap.js` 进程内启动真实
 Express 服务（见 `../remote-mock-server`），设置 `RISK_CODE_URLS` / `REMOTE_LOG_URLS`
-环境变量，再 `require('jsonfb/lib/sandbox')`，从而覆盖：
+环境变量，再 `require('jsonfb').sandbox`（单文件打包后沙箱 API 经主包暴露），从而覆盖：
 
 - `sign.util`：MD5、简单/递归参数排序、与服务端签名交叉一致。
 - `http-client`：post/get/put、JSON 解析、非 2xx、超时、可重试错误的重试恢复。

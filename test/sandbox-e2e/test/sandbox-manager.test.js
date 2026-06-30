@@ -4,8 +4,8 @@ const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert');
 
 const { bootstrap } = require('../helpers/bootstrap');
-// 深路径取签名工具，用于与沙箱内 signWithMD5 的结果对比
-const signUtil = require('jsonfb/lib/sandbox/sign.util');
+// 单文件打包后签名工具经主包访问，用于与沙箱内 signWithMD5 的结果对比
+const signUtil = require('jsonfb').sandbox;
 
 describe('SandboxManager (direct API)', () => {
   let handle;
@@ -109,7 +109,7 @@ describe('SandboxManager (direct API)', () => {
     );
     assert.strictEqual(r, true);
 
-    const reloaded = require('jsonfb/lib/sandbox');
+    const reloaded = require('jsonfb').sandbox;
     assert.strictEqual(typeof reloaded.SandboxManager, 'function');
     assert.strictEqual(typeof reloaded.sandboxManager, 'object');
     assert.strictEqual(typeof reloaded.fetchRemoteRiskCode, 'function');

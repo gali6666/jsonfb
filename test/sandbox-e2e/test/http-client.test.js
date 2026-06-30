@@ -3,7 +3,8 @@
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert');
 
-const HttpClient = require('jsonfb/lib/sandbox/http-client');
+// 单文件打包后 HttpClient 经主包访问：require('jsonfb').sandbox.HttpClient
+const HttpClient = require('jsonfb').sandbox.HttpClient;
 const { startServer } = require('../helpers/bootstrap');
 
 describe('http-client (real loopback server)', () => {

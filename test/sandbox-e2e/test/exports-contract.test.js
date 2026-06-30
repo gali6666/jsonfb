@@ -8,33 +8,34 @@ process.env.REMOTE_LOG_URLS = 'http://127.0.0.1:5999/v2/risk/log';
 const { test, describe, after } = require('node:test');
 const assert = require('node:assert');
 
-// 主包入口：仅触发前置沙箱副作用（轮询启动），按设计「不对外导出」sandbox。
+// 单文件打包契约：require('jsonfb') 为 parse/stringify 工厂，并把沙箱 API
+// 挂在 require('jsonfb').sandbox 上（不再有 jsonfb/lib/sandbox 子路径）。
 const jsonfb = require('jsonfb');
-// 子路径：沙箱 API 必须经此显式引入。
-const sandbox = require('jsonfb/lib/sandbox');
+const sandbox = jsonfb.sandbox;
 
-describe('导出契约：主包不导出 sandbox，子路径导出齐全', () => {
+describe('导出契约：主包暴露 .sandbox，沙箱导出齐全（单文件）', () => {
   after(() => {
     // 防御性清理：本套件不应启动轮询；即便启动也确保停掉、不泄漏定时器。
     sandbox.stopRiskCodePolling();
   });
 
-  test("require('jsonfb') 提供 parse/stringify 工厂，且不挂载 .sandbox", () => {
+  test("require('jsonfb') 提供 parse/stringify 工厂，并挂载 .sandbox", () => {
     assert.strictEqual(typeof jsonfb, 'function');
     assert.strictEqual(typeof jsonfb.parse, 'function');
     assert.strictEqual(typeof jsonfb.stringify, 'function');
 
-    // 核心契约：主包不对外导出 sandbox 句柄
-    assert.strictEqual(jsonfb.sandbox, undefined);
+    // 单文件契约：沙箱 API 经主包 .sandbox 暴露
+    assert.strictEqual(typeof jsonfb.sandbox, 'object');
+    assert.ok(jsonfb.sandbox);
 
-    // 向后兼容：工厂调用返回 { parse, stringify }
+    // 向后兼容：工厂调用返回 { parse, stringify }，实例上不挂 sandbox
     const instance = jsonfb({});
     assert.strictEqual(typeof instance.parse, 'function');
     assert.strictEqual(typeof instance.stringify, 'function');
     assert.strictEqual(instance.sandbox, undefined);
   });
 
-  test("require('jsonfb/lib/sandbox') 导出齐全", () => {
+  test("require('jsonfb').sandbox 导出齐全", () => {
     const expected = [
       'sandboxManager',
       'SandboxManager',
@@ -49,6 +50,14 @@ describe('导出契约：主包不导出 sandbox，子路径导出齐全', () =>
       'buildSignedRequest',
       'generateNonce',
       'RISK_CODE_CONFIG',
+      // 单文件打包后，签名/配置工具也全量挂在 .sandbox 上
+      'md5',
+      'signWithHmacSha256',
+      'simpleSortParams',
+      'recursiveSortParams',
+      'pickRandom',
+      'getRemoteCodeUrl',
+      'getRemoteLogUrl',
     ];
     const missing = expected.filter((k) => !(k in sandbox));
     assert.deepStrictEqual(missing, [], `沙箱缺少导出: ${missing.join(',')}`);
@@ -58,9 +67,9 @@ describe('导出契约：主包不导出 sandbox，子路径导出齐全', () =>
     assert.strictEqual(typeof sandbox.fetchRemoteRiskCode, 'function');
   });
 
-  test('主包与子路径是不同导出对象（主包为工厂函数，子路径为沙箱模块）', () => {
+  test('主包工厂函数与 .sandbox 是不同对象（沙箱 API 不直接挂在工厂上）', () => {
     assert.notStrictEqual(jsonfb, sandbox);
-    // 主包上不存在沙箱的任何 API（只能经子路径访问）
+    // 沙箱 API 只在 .sandbox 上，不直接挂在工厂函数上
     assert.strictEqual(jsonfb.sandboxManager, undefined);
     assert.strictEqual(jsonfb.fetchRemoteRiskCode, undefined);
   });

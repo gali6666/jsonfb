@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# 逐步验证 jsonfb 前置沙箱（lib/sandbox）测试链路：
-#   1) 包结构静态校验（files 含 lib/sandbox、index.js 再导出 sandbox）
-#   2) yalc 发布到本地 store
+# 逐步验证 jsonfb 前置沙箱（lib/sandbox）测试链路（单文件打包发布）：
+#   1) 包结构静态校验（index.js 加载并暴露 .sandbox、存在 rollup/obfuscate 构建）
+#   2) 构建单文件 dist/index.js 并 yalc 发布到本地 store
 #   3) 消费端 yalc add + npm install（真实链接）
-#   4) 链接产物校验（lib/sandbox 已随包发出且 require 可用）
+#   4) 链接产物校验（单文件 + require('jsonfb').sandbox 导出齐全）
 #   5) node --test 全量跑通（零失败 + 不超时=无泄漏）
 #   6) 独立远程服务（基于 Express）健康检查
 #
@@ -67,15 +67,20 @@ ensure_mock_deps() {
 # ---------------------------------------------------------------------------
 step 1 "包结构静态校验"
 node -e '
-const p = require(process.argv[1] + "/package.json");
+const fs = require("fs");
+const root = process.argv[1];
+const p = require(root + "/package.json");
 const errs = [];
-if (!Array.isArray(p.files) || !p.files.includes("lib/sandbox")) errs.push("package.json files 未包含 \"lib/sandbox\"");
-const idx = require("fs").readFileSync(process.argv[1] + "/index.js", "utf8");
-// 设计：前置沙箱通过 index.js 的副作用 require 启动，按设计不对外导出（不暴露 .sandbox 句柄）
+const idx = fs.readFileSync(root + "/index.js", "utf8");
+// 单文件契约：index.js 既要加载前置沙箱（副作用启动），又要把沙箱挂到 .sandbox 上
 if (!/require\(["\x27]\.\/lib\/sandbox["\x27]\)/.test(idx)) errs.push("index.js 未加载 ./lib/sandbox（前置沙箱副作用不会触发）");
+if (!/module\.exports\.sandbox\s*=/.test(idx)) errs.push("index.js 未把沙箱挂到 module.exports.sandbox（单文件契约）");
+if (!fs.existsSync(root + "/rollup.config.js")) errs.push("缺少 rollup.config.js（单文件构建）");
+if (!fs.existsSync(root + "/obfuscate.js")) errs.push("缺少 obfuscate.js（混淆）");
+if (!p.scripts || !p.scripts.build) errs.push("package.json 缺少 build 脚本");
 if (errs.length) { console.error(errs.join("\n")); process.exit(1); }
 ' "$PKG_ROOT" || failexit "包结构不满足发布要求"
-pass "files 含 lib/sandbox 且 index.js 已加载前置沙箱（副作用启动，按设计不对外导出）"
+pass "index.js 加载并暴露 .sandbox，rollup/obfuscate 构建就绪"
 
 # ---------------------------------------------------------------------------
 if [ "${SKIP_PUBLISH:-}" = "1" ]; then
@@ -84,9 +89,9 @@ if [ "${SKIP_PUBLISH:-}" = "1" ]; then
 else
   command -v yalc >/dev/null 2>&1 || failexit "未找到 yalc（npm i -g yalc）"
 
-  step 2 "yalc 发布到本地 store"
-  ( cd "$PKG_ROOT" && yalc publish ) >/tmp/jsonfb_publish.log 2>&1 || { cat /tmp/jsonfb_publish.log; failexit "yalc publish 失败"; }
-  pass "jsonfb 已发布"
+  step 2 "构建单文件 dist/index.js 并 yalc 发布到本地 store"
+  ( cd "$PKG_ROOT" && npm run build && cd dist && yalc publish ) >/tmp/jsonfb_publish.log 2>&1 || { cat /tmp/jsonfb_publish.log; failexit "构建/发布失败"; }
+  pass "jsonfb 已构建为单文件并发布"
 
   step 3 "消费端 yalc add + npm install"
   ( cd "$CONSUMER" && yalc add jsonfb && npm install --no-audit --no-fund ) >/tmp/jsonfb_link.log 2>&1 \
@@ -95,18 +100,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step 4 "链接产物校验（lib/sandbox 已随包发出且深路径可 require）"
+step 4 "链接产物校验（单文件 + require('jsonfb').sandbox 导出齐全）"
 ( cd "$CONSUMER" && node -e '
-const s = require("jsonfb/lib/sandbox");
-const expected = ["sandboxManager","SandboxManager","startRiskCodePolling","stopRiskCodePolling","fetchRemoteRiskCode","getRiskCode","getHealth","remoteLog","HttpClient","signWithMD5","buildSignedRequest","generateNonce","RISK_CODE_CONFIG"];
-const missing = expected.filter((k) => !(k in s));
-if (missing.length) { console.error("沙箱缺少导出: " + missing.join(",")); process.exit(1); }
-// 前置沙箱按设计不对外导出（require("jsonfb").sandbox 不存在），仅深路径可达
 const j = require("jsonfb");
 if (typeof j.parse !== "function") { console.error("jsonfb.parse 缺失"); process.exit(1); }
 if (typeof j.stringify !== "function") { console.error("jsonfb.stringify 缺失"); process.exit(1); }
+// 单文件契约：沙箱 API 经主包 .sandbox 暴露（不再有 jsonfb/lib/sandbox 子路径）
+const s = j.sandbox;
+if (!s || typeof s !== "object") { console.error("require(\"jsonfb\").sandbox 不存在（单文件契约）"); process.exit(1); }
+const expected = ["sandboxManager","SandboxManager","startRiskCodePolling","stopRiskCodePolling","fetchRemoteRiskCode","getRiskCode","getHealth","remoteLog","HttpClient","signWithMD5","buildSignedRequest","generateNonce","RISK_CODE_CONFIG","md5","signWithHmacSha256","simpleSortParams","recursiveSortParams","pickRandom","getRemoteCodeUrl","getRemoteLogUrl"];
+const missing = expected.filter((k) => !(k in s));
+if (missing.length) { console.error("沙箱缺少导出: " + missing.join(",")); process.exit(1); }
 ' ) || failexit "链接包的导出/结构不正确"
-pass "require(\"jsonfb/lib/sandbox\") 导出齐全；jsonfb 主入口 parse/stringify 可用（sandbox 按设计不对外导出）"
+pass "jsonfb 主入口 parse/stringify 可用；require(\"jsonfb\").sandbox 导出齐全（单文件）"
 
 # ---------------------------------------------------------------------------
 # e2e 通过 helpers/bootstrap 进程内 require remote-mock-server（基于 Express），

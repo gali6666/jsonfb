@@ -3,8 +3,8 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 
-// 经 yalc 链接的被测包（深路径访问全部签名工具）
-const signUtil = require('jsonfb/lib/sandbox/sign.util');
+// 经 yalc 链接的被测包：单文件打包后签名工具全量挂在 require('jsonfb').sandbox 上
+const signUtil = require('jsonfb').sandbox;
 // 远端 mock 服务的独立签名实现，用于交叉验证算法一致
 const mockSign = require('../../remote-mock-server/sign');
 

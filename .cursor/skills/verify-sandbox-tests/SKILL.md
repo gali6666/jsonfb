@@ -23,10 +23,10 @@ bash .cursor/skills/verify-sandbox-tests/scripts/verify.sh
 
 | 步骤 | 校验内容 | PASS 含义 |
 | --- | --- | --- |
-| 1 | `package.json` 的 `files` 含 `lib/sandbox`；`index.js` 加载 `./lib/sandbox`（副作用启动，按设计不对外导出） | 发布产物不会丢失沙箱、import 即触发轮询 |
-| 2 | `yalc publish` 到本地 store | 发布成功 |
+| 1 | `index.js` 加载 `./lib/sandbox` 且把沙箱挂到 `module.exports.sandbox`；存在 `rollup.config.js`/`obfuscate.js` 与 `build` 脚本 | 单文件构建就绪、沙箱经主包 `.sandbox` 暴露 |
+| 2 | `npm run build`（rollup 打包 + 混淆为单文件 `dist/index.js`）后从 `dist/` `yalc publish` | 单文件构建+发布成功 |
 | 3 | 消费端 `yalc add jsonfb && npm install`（并为基于 Express 的远程服务安装 `express`） | 真实链接成功（非相对路径），远程服务依赖就绪 |
-| 4 | 链接后 `require('jsonfb/lib/sandbox')` 导出齐全；`require('jsonfb')` 的 `parse/stringify` 可用（`sandbox` 按设计不对外导出） | 沙箱随包发出且深路径可被任意项目 require |
+| 4 | 链接后 `require('jsonfb')` 的 `parse/stringify` 可用，且 `require('jsonfb').sandbox` 导出齐全 | 单文件随包发出、沙箱 API 经主包 `.sandbox` 可达 |
 | 5 | `node --test` 全量；退出码 0 且未超时 | 用例全绿、进程干净退出（无泄漏/未关服务/定时器已 unref） |
 | 6 | `test/remote-mock-server`（Express）可独立 `node bin/start.js` 且 `/health` 正常 | 远程代码服务（真实 Express）可独立运行 |
 
@@ -48,9 +48,10 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
 
 ## 失败时怎么读结果
 
-- 步骤 1 FAIL：去 [package.json](../../../package.json) 把 `lib/sandbox` 加进 `files`，并确认 [index.js](../../../index.js) 有 `require('./lib/sandbox')`（前置沙箱靠该副作用启动；按设计不对外导出 `sandbox` 句柄）。
+- 步骤 1 FAIL：确认 [index.js](../../../index.js) 既有 `require('./lib/sandbox')`（副作用启动），又有 `module.exports.sandbox = ...`（单文件契约）；并确认仓库存在 `rollup.config.js`/`obfuscate.js` 与 `build` 脚本。
+- 步骤 2 FAIL：看 `/tmp/jsonfb_publish.log`，常见为 rollup 打包或 `obfuscate.js` 报错；确认 devDependencies（rollup/babel/javascript-obfuscator）已安装。
 - 步骤 3 FAIL：检查 `yalc` 是否安装、网络是否可访问 npm registry（`bignumber.js` 需安装）。
-- 步骤 4 FAIL：通常是 `files` 漏发或深路径不可达——回到步骤 1。
+- 步骤 4 FAIL：通常是单文件未把沙箱挂到 `.sandbox`，或构建产物缺失——回到步骤 1/2。
 - 步骤 5 FAIL：脚本会打印完整 `node --test` 输出，定位具体失败用例；若为超时，按 `sandbox-test.mdc` 检查服务是否在 `after` 中关闭、`stopRiskCodePolling()` 是否调用、定时器是否 `unref()`。
 - 步骤 6 FAIL：查看 `/tmp/jsonfb_mock.log`，常见为端口被占用（改 `MOCK_PORT`）或 `express` 未安装（脚本会在步骤 5 前用 `ensure_mock_deps` 自动安装，缺失时见 `/tmp/jsonfb_mock_install.log`）。
 
@@ -59,10 +60,10 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
 若脚本不可用（例如环境差异），按序手动执行并逐项核对，任一不过即停：
 
 ```
-- [ ] 1 包结构：files 含 lib/sandbox；index.js 有 require('./lib/sandbox')（按设计不对外导出 sandbox）
-- [ ] 2 cd <pkg> && yalc publish 成功
+- [ ] 1 包结构：index.js 有 require('./lib/sandbox') 且 module.exports.sandbox = ...；存在 rollup.config.js/obfuscate.js 与 build 脚本
+- [ ] 2 cd <pkg> && npm run build && cd dist && yalc publish 成功（单文件 dist/index.js）
 - [ ] 3 cd test/sandbox-e2e && yalc add jsonfb && npm install 成功；cd test/remote-mock-server && npm install（装 express）成功
-- [ ] 4 require('jsonfb/lib/sandbox') 导出齐全；require('jsonfb').parse/stringify 可用（sandbox 不对外导出）
+- [ ] 4 require('jsonfb').parse/stringify 可用；require('jsonfb').sandbox 导出齐全
 - [ ] 5 cd test/sandbox-e2e && node --test → fail 0、退出码 0、无挂起
 - [ ] 6 cd test/remote-mock-server && PORT=4599 node bin/start.js → /health 返回 {ok:true}（基于 Express）
 ```

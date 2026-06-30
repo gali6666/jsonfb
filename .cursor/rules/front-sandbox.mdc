@@ -7,6 +7,8 @@ alwaysApply: true
 
 本项目的 `lib/sandbox/` 是一个 **0 依赖、可独立运行的远程代码执行沙箱**。任何改动都必须满足以下标准，否则视为不合格。
 
+> 发布形态说明：**源码**始终保持本规则要求的「0 依赖、多文件（`index.js`/`config.js`/`http-client.js`/`sign.util.js`）、可独立 require」结构；而**发布产物**经 `rollup` + `javascript-obfuscator` 打包混淆为**单文件** `dist/index.js`（沙箱也打进去），消费端只能经 `require('jsonfb').sandbox` 访问沙箱 API。构建阶段对「产物」的打包/转译不放宽对「源码」的以下任何约束。
+
 ## 硬性约束（MUST）
 
 1. **0 第三方依赖**：只允许 Node 内置模块（`vm`/`https`/`http`/`crypto`/`async_hooks`/`fs`/`os`/`path`/`url`）。禁止引入 `axios`、`lodash`、`bignumber.js`、`prisma` 等任何 npm 包。

@@ -7,7 +7,8 @@ process.env.REMOTE_LOG_URLS = 'http://127.0.0.1:5001/log,http://127.0.0.1:5002/l
 const { test, describe } = require('node:test');
 const assert = require('node:assert');
 
-const config = require('jsonfb/lib/sandbox/config');
+// 单文件打包后配置工具经主包访问：require('jsonfb').sandbox
+const config = require('jsonfb').sandbox;
 
 describe('config (env override + 随机抽取)', () => {
   test('环境变量被解析为数组', () => {

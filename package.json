@@ -11,8 +11,12 @@
   ],
   "scripts": {
     "test": "./node_modules/mocha/bin/mocha -R spec --check-leaks test/*-test.js",
-    "yalc:publish": "yalc publish",
-    "yalc:push": "yalc push"
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && rollup -c && node obfuscate.js",
+    "build:notobf": "npm run clean && rollup -c",
+    "yalc:publish": "npm run build && cd dist && yalc publish",
+    "yalc:publish:notrollup": "yalc publish",
+    "yalc:push": "npm run build && cd dist && yalc push"
   },
   "repository": {
     "type": "git",
@@ -31,7 +35,15 @@
     "bignumber.js": "^9.0.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/preset-env": "^7.29.7",
+    "@rollup/plugin-babel": "^6.1.0",
+    "@rollup/plugin-commonjs": "^29.0.3",
+    "@rollup/plugin-json": "^6.1.0",
+    "@rollup/plugin-node-resolve": "^16.0.3",
     "chai": "4.2.0",
-    "mocha": "8.0.1"
+    "javascript-obfuscator": "^4.2.2",
+    "mocha": "8.0.1",
+    "rollup": "^4.62.2"
   }
 }

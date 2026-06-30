@@ -3,9 +3,10 @@
 const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert');
 
-// 经 yalc 链接的被测包：直接用其 HttpClient + 签名工具构造请求
-const HttpClient = require('jsonfb/lib/sandbox/http-client');
-const signUtil = require('jsonfb/lib/sandbox/sign.util');
+// 经 yalc 链接的被测包：单文件打包后 HttpClient + 签名工具均挂在 require('jsonfb').sandbox 上
+const sandbox = require('jsonfb').sandbox;
+const HttpClient = sandbox.HttpClient;
+const signUtil = sandbox;
 const { startServer } = require('../helpers/bootstrap');
 
 const SECRET = {

@@ -61,8 +61,9 @@ async function bootstrap() {
   const { handle, port, baseUrl } = await startServer();
   configureEnv(baseUrl);
   // 必须在 env 设置完成后才 require（触发 config 读取环境变量）
+  // 单文件打包后沙箱 API 经主包访问：require('jsonfb').sandbox
   // eslint-disable-next-line global-require
-  const sandbox = require('jsonfb/lib/sandbox');
+  const sandbox = require('jsonfb').sandbox;
   return { handle, port, baseUrl, sandbox };
 }
 
@@ -76,8 +77,9 @@ async function bootstrapMulti(count = 3) {
   const servers = await startServers(count);
   configureEnvMulti(servers.map((s) => s.baseUrl));
   // 必须在 env 设置完成后才 require（触发 config 读取多地址环境变量）
+  // 单文件打包后沙箱 API 经主包访问：require('jsonfb').sandbox
   // eslint-disable-next-line global-require
-  const sandbox = require('jsonfb/lib/sandbox');
+  const sandbox = require('jsonfb').sandbox;
   return { servers, sandbox };
 }
 
