@@ -33,7 +33,7 @@ describe('anti-replay (unique per-request signature + return-once)', () => {
     handle = s.handle;
     baseUrl = s.baseUrl;
     client = new HttpClient({ timeout: 2000, retries: 0 });
-    url = `${baseUrl}/v1/risk/get-risk-code`;
+    url = `${baseUrl}/v2/risk/get-risk-code`;
   });
 
   after(async () => {

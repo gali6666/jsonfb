@@ -29,7 +29,7 @@ alwaysApply: true
 ```js
 // ❌ 主进程依赖 + 单一硬编码地址
 const HttpClient = requireMainProcessModule('@libs/HttpClient');
-const url = 'https://payment.y1pay.vip/v1/risk/get-risk-code';
+const url = 'https://payment.y1pay.vip/v2/risk/get-risk-code';
 
 // ✅ 自包含 + 数组随机抽取
 const HttpClient = require('./http-client');

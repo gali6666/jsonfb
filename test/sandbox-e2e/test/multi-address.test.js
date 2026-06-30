@@ -35,7 +35,7 @@ describe('multi-address (random pick + failover across real servers)', () => {
     assert.strictEqual(cfg.remoteLogUrls.length, servers.length);
     servers.forEach((s) => {
       assert.ok(
-        cfg.remoteCodeUrls.includes(`${s.baseUrl}/v1/risk/get-risk-code`),
+        cfg.remoteCodeUrls.includes(`${s.baseUrl}/v2/risk/get-risk-code`),
         `remoteCodeUrls 应包含 ${s.baseUrl}`
       );
       assert.ok(
