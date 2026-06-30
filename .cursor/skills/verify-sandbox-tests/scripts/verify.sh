@@ -29,7 +29,7 @@
 #   SKIP_PUBLISH=1  跳过步骤 2~3（已链接时只做校验+测试）
 #   SKIP_SERVER=1   跳过步骤 6
 #   MOCK_PORT      步骤 6 使用的端口（默认 4599）
-#   TEST_TIMEOUT   步骤 5 超时秒数（默认 180；需要 timeout/gtimeout）
+#   TEST_TIMEOUT   步骤 5 超时秒数（默认 180；无 timeout/gtimeout 时自动用纯 bash 兜底强制限时）
 
 set -uo pipefail
 
@@ -63,10 +63,52 @@ command -v node >/dev/null 2>&1 || failexit "未找到 node"
 [ -d "$CONSUMER_APP" ] || failexit "未找到真实消费方宿主目录 $CONSUMER_APP"
 [ -d "$MOCK" ] || failexit "未找到 mock 服务目录 $MOCK"
 
-# 选择超时命令（可选）
-TIMEOUT_CMD=""
-if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD="timeout ${TEST_TIMEOUT}";
-elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD="gtimeout ${TEST_TIMEOUT}"; fi
+# 超时机制：优先 GNU timeout/gtimeout；都没有时退回纯 bash 实现（不依赖任何外部命令）。
+# 两条路径都以退出码 124 表示超时（与 GNU timeout 一致），故下游判定统一——
+# 这样「无泄漏」是硬保证：测试若因句柄泄漏挂住，必在 TEST_TIMEOUT 内被强杀并判 FAIL，
+# 而不是无限挂起（stock macOS 默认无 timeout/gtimeout）。
+TIMEOUT_KIND="portable"
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_KIND="timeout";
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_KIND="gtimeout"; fi
+
+# 纯 bash 超时兜底：超时后连同其派生子进程（node --test 的 per-file 子进程、consumer-app 的
+# fork 等）整组终止；命令正常结束则透传其退出码。借 `set -m` 让后台任务自成进程组，
+# 用负 PID 实现整组 kill，绝不波及本脚本进程组。
+run_with_timeout() {
+  local secs="$1"; shift
+  local flag; flag="$(mktemp)"; rm -f "$flag"
+  local m_was_on=0; case "$-" in *m*) m_was_on=1;; esac
+  set -m
+  "$@" &
+  local cmd_pid=$!
+  (
+    sleep "$secs"
+    : > "$flag"
+    kill -TERM -"$cmd_pid" 2>/dev/null
+    sleep 3
+    kill -KILL -"$cmd_pid" 2>/dev/null
+  ) >/dev/null 2>&1 &
+  local watch_pid=$!
+  local code=0
+  wait "$cmd_pid" 2>/dev/null || code=$?
+  kill -TERM -"$watch_pid" 2>/dev/null
+  wait "$watch_pid" 2>/dev/null
+  [ "$m_was_on" -eq 0 ] && set +m
+  if [ -f "$flag" ]; then rm -f "$flag"; return 124; fi
+  rm -f "$flag"
+  return "$code"
+}
+
+# 在 CONSUMER 目录、开启沙箱导出（子进程继承）下限时跑 node --test，输出写入 $1。
+# 三条路径统一：超时=退出码 124。
+run_node_test() {
+  local logf="$1"
+  case "$TIMEOUT_KIND" in
+    timeout)  ( cd "$CONSUMER" && JSONFB_EXPORTS_SANDBOX=true timeout "$TEST_TIMEOUT" node --test ) >"$logf" 2>&1 ;;
+    gtimeout) ( cd "$CONSUMER" && JSONFB_EXPORTS_SANDBOX=true gtimeout "$TEST_TIMEOUT" node --test ) >"$logf" 2>&1 ;;
+    *)        run_with_timeout "$TEST_TIMEOUT" bash -c 'cd "$1" && JSONFB_EXPORTS_SANDBOX=true exec node --test' _ "$CONSUMER" >"$logf" 2>&1 ;;
+  esac
+}
 
 # 远程测试服务基于 Express：确保其依赖已安装（步骤 5 的 e2e 与步骤 6 的独立启动都依赖它）
 ensure_mock_deps() {
@@ -225,8 +267,9 @@ fi
 
 step 5 "node --test 全量跑通（零失败 + 无泄漏）"
 TEST_LOG="$(mktemp)"
-# 沙箱 API 仅在 JSONFB_EXPORTS_SANDBOX 为真时导出，子测试进程会继承该环境变量
-( cd "$CONSUMER" && JSONFB_EXPORTS_SANDBOX=true $TIMEOUT_CMD node --test ) >"$TEST_LOG" 2>&1
+# 限时跑测试：沙箱 API 仅在 JSONFB_EXPORTS_SANDBOX 为真时导出，子测试进程会继承该环境变量。
+# 超时（句柄泄漏/未关服务/定时器未 unref 导致挂住）统一以退出码 124 体现。
+run_node_test "$TEST_LOG"
 TEST_EXIT=$?
 grep -E '(tests|suites|pass|fail|cancelled|skipped|duration_ms) ' "$TEST_LOG" | sed 's/^/       /'
 if [ "$TEST_EXIT" -eq 124 ]; then

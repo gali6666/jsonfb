@@ -49,7 +49,7 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
   bash .cursor/skills/verify-sandbox-tests/scripts/verify.sh
 ```
 
-无泄漏判定依赖 `timeout`/`gtimeout`（存在时启用）：测试若在 `TEST_TIMEOUT` 内未结束判为 FAIL。macOS 可 `brew install coreutils` 获得 `gtimeout`；缺省时退回仅以退出码判定。
+无泄漏判定为**硬保证**且不依赖外部命令：脚本优先用 `timeout`/`gtimeout`，二者都没有时（stock macOS 默认如此）自动退回**纯 bash 超时兜底**——测试若在 `TEST_TIMEOUT` 内未结束（句柄泄漏/未关服务/定时器未 `unref` 挂住），会连同其派生子进程被整组强杀并判 FAIL（退出码 124），不会无限挂起。`TEST_TIMEOUT` 可按机器性能调整（默认 180s）。
 
 ## 失败时怎么读结果
 
