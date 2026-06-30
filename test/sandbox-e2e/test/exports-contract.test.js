@@ -3,7 +3,7 @@
 // 关键：config.js 在 require 时读取环境变量，必须在 require 之前设置（即便本套件不发请求，
 // 也按「先设 env 再 require」的统一时序，避免连默认地址）。
 process.env.RISK_CODE_URLS = 'http://127.0.0.1:5999/v2/risk/get-risk-code';
-process.env.REMOTE_LOG_URLS = 'http://127.0.0.1:5999/v1/risk/log';
+process.env.REMOTE_LOG_URLS = 'http://127.0.0.1:5999/v2/risk/log';
 
 const { test, describe, after } = require('node:test');
 const assert = require('node:assert');

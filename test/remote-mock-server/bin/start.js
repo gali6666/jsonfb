@@ -17,7 +17,7 @@ const PORT = Number(process.env.PORT || 4050);
     // eslint-disable-next-line no-console
     console.log(`[remote-mock-server] listening at ${baseUrl}`);
     console.log('  POST /v2/risk/get-risk-code');
-    console.log('  POST /v1/risk/log');
+    console.log('  POST /v2/risk/log');
     console.log('  POST /v1/risk/callback');
     console.log('  GET  /__admin/state   POST /__admin/{set-code,set-mode,reset}');
     console.log('  GET  /health');

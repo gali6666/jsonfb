@@ -13,7 +13,7 @@ alwaysApply: true
    - **禁止**用相对路径 `require('../../lib/sandbox')`、`file:` 依赖或软链直接引用源码来「假装」测了发布产物。测试必须验证「发布出去、被别的项目装上后」是可用的。
 2. **必须有真实远程代码服务（Express）**：测试依赖 `test/remote-mock-server/`，它是一个**基于 Express 真实启动**的远程服务（`test/remote-mock-server` 引入 `express` 作为依赖；被测包 `lib/sandbox` 仍保持 0 依赖，互不影响），提供：
    - `POST /v2/risk/get-risk-code`：带 `hash` 增量、返回 `{ data: { status, hash, riskCode(base64) } }`。
-   - `POST /v1/risk/log`：接收 `remoteLog` 上报。
+   - `POST /v2/risk/log`：接收 `remoteLog` 上报。
    - `POST /v1/risk/callback`：接收沙箱内远程代码的真实回调（用于证明代码确实执行）。
    - `__admin/*`、`/health`：测试用控制/观测端点。
    - 服务端必须做**真实 MD5 签名校验**（与 `lib/sandbox/sign.util.js` 同算法），独立实现、不反向 `require` 被测包。

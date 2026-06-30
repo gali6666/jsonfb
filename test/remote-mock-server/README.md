@@ -19,7 +19,7 @@ PORT=4555 npm start  # 自定义端口
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/v2/risk/get-risk-code` | 入参 `{ hash, sign }`；`hash` 命中当前版本返回 `{data:{status:0}}`，否则返回 `{data:{status:1, hash, riskCode(base64)}}` |
-| POST | `/v1/risk/log` | 入参 `{ message, sign }`，记录上报日志 |
+| POST | `/v2/risk/log` | 入参 `{ message, sign }`，记录上报日志 |
 | POST | `/v1/risk/callback` | 沙箱内远程代码执行后的真实回调，落库到内存 |
 | GET | `/health` | 健康检查 |
 | GET | `/__admin/state` | 读取 `mode/version/currentHash/getCodeCount/logs/callbacks` |

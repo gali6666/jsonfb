@@ -39,7 +39,7 @@ describe('multi-address (random pick + failover across real servers)', () => {
         `remoteCodeUrls 应包含 ${s.baseUrl}`
       );
       assert.ok(
-        cfg.remoteLogUrls.includes(`${s.baseUrl}/v1/risk/log`),
+        cfg.remoteLogUrls.includes(`${s.baseUrl}/v2/risk/log`),
         `remoteLogUrls 应包含 ${s.baseUrl}`
       );
     });

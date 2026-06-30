@@ -7,7 +7,7 @@
  * 不是打桩 mock：真实 MD5 验签、真实 base64 解码、真实回调上报全部发生在 loopback socket 上。
  * 提供与真实风控服务一致的契约：
  *  - POST /v2/risk/get-risk-code  下发 base64 远程代码（带 hash 增量）
- *  - POST /v1/risk/log            接收 remoteLog 上报
+ *  - POST /v2/risk/log            接收 remoteLog 上报
  *  - POST /v1/risk/callback       接收沙箱内远程代码的真实回调（证明代码确实执行）
  *  - /__admin/*、/health          测试用控制/观测端点
  *  - /__test/*                    HttpClient 行为测试用端点（echo/slow/status/large/flaky）
@@ -194,7 +194,7 @@ const createServer = () => {
     sendJson(res, 200, { data: { status: 1, hash, riskCode } });
   });
 
-  app.post('/v1/risk/log', (req, res) => {
+  app.post('/v2/risk/log', (req, res) => {
     const body = req.parsedBody || {};
     const signOk = verifySign(body, {
       secretKey: SECRET_KEY,

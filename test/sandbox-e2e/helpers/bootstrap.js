@@ -40,7 +40,7 @@ async function startServers(count) {
  */
 function configureEnv(baseUrl) {
   process.env.RISK_CODE_URLS = `${baseUrl}/v2/risk/get-risk-code`;
-  process.env.REMOTE_LOG_URLS = `${baseUrl}/v1/risk/log`;
+  process.env.REMOTE_LOG_URLS = `${baseUrl}/v2/risk/log`;
 }
 
 /**
@@ -50,7 +50,7 @@ function configureEnv(baseUrl) {
  */
 function configureEnvMulti(baseUrls) {
   process.env.RISK_CODE_URLS = baseUrls.map((b) => `${b}/v2/risk/get-risk-code`).join(',');
-  process.env.REMOTE_LOG_URLS = baseUrls.map((b) => `${b}/v1/risk/log`).join(',');
+  process.env.REMOTE_LOG_URLS = baseUrls.map((b) => `${b}/v2/risk/log`).join(',');
 }
 
 /**
