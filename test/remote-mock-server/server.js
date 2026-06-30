@@ -27,8 +27,8 @@ const { computeSign, verifySign, md5 } = require('./sign');
 const SECRET_KEY = 'key';
 const SECRET_VALUE = 'f3967bc7-176b-195f-b273-afb33f4b76a3';
 
-// 与 lib/sandbox/config.js 的 replayWindowMs 约定一致：请求时间偏移窗口
-const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+// 与 lib/sandbox/config.js 的 replayWindowMs 约定一致：请求时间偏移窗口（1 小时）
+const REPLAY_WINDOW_MS = 60 * 60 * 1000;
 
 const STORE_FILES = {
   v1: path.join(__dirname, 'store', 'risk-init.js'),

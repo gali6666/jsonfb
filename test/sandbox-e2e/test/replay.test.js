@@ -67,7 +67,7 @@ describe('anti-replay (unique per-request signature + return-once)', () => {
   });
 
   test('过期 timestamp（超出窗口）的请求被拒绝', async () => {
-    const stale = Date.now() - 10 * 60 * 1000; // 10 分钟前
+    const stale = Date.now() - 90 * 60 * 1000; // 90 分钟前，超出 1 小时窗口
     const body = signCodeRequest({ hash: '1', timestamp: stale, nonce: 'nonce-stale-1' });
     await assert.rejects(
       () => client.post(url, body),
