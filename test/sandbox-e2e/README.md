@@ -29,6 +29,9 @@ mock 服务（见 `../remote-mock-server`），设置 `RISK_CODE_URLS` / `REMOTE
 - `sign.util`：MD5、简单/递归参数排序、与服务端签名交叉一致。
 - `http-client`：post/get/put、JSON 解析、非 2xx、超时、可重试错误的重试恢复。
 - `config`：`pickRandom`、`getRemoteCodeUrl/getRemoteLogUrl`、环境变量覆盖。
+- 多地址（`multi-address.test.js`）：真正起多个 mock 服务，验证 `remoteCodeUrls` /
+  `remoteLogUrls` 为数组时的随机分发（每个地址都被命中）、日志多地址分发，
+  以及部分地址失效时的故障转移（拉取绝不抛错、存活地址仍可提供可用代码）。
 - `SandboxManager`：`executeCode/executeInit`、缓存、`setTimeout` 守卫、原生 `require`、
   注入工具、`module.exports` 隔离、上下文隔离。
 - 端到端轮询：`fetchRemoteRiskCode` -> 解码 -> 沙箱 `init` 真实回调；增量 hash；

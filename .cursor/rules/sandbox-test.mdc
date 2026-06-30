@@ -29,6 +29,10 @@ alwaysApply: true
 - `sign.util.js`：`md5`（已知向量）、`simpleSortParams`/`recursiveSortParams`（忽略 `sign`、跳过空值、嵌套、bigint/数组/Decimal-like）、`signWithMD5`、`signWithHmacSha256`；并与服务端重算结果**交叉一致**。
 - `http-client.js`：`post`/`get`/`put`、JSON 解析、非 2xx 拒绝（带 `statusCode`/`responseData`）、超时（`ECONNABORTED`）、**可重试错误的重试恢复**。
 - `config.js`：`pickRandom`（恒在集合内 / 空数组 / 非数组 → `undefined`）、`getRemoteCodeUrl`/`getRemoteLogUrl`、`RISK_CODE_CONFIG` 形状与环境变量覆盖。
+- **多地址（数组随机抽取 + 容灾）**：必须真正起**多个** mock 服务（本地多端口）验证 `remoteCodeUrls`/`remoteLogUrls` 为数组时的真实行为，而非仅对 `pickRandom` 做单元断言：
+ - **随机分发**：多次 `fetchRemoteRiskCode` 后每个地址都被命中；全部在线时命中总数等于请求数（无丢失/无重试重复计数）。
+ - **日志多地址**：多次 `remoteLog` 在多个日志地址间分发，且每条上报经服务端独立重算验签通过。
+ - **故障转移**：数组中部分地址失效（关闭服务）时，拉取**绝不抛错**，存活地址仍能被随机选中并提供可用代码，失败命中累计到 `totalFailures`（可观测）。
 - `SandboxManager`：`executeCode`（`main`/回退 `init`/都无 → `undefined`）、`executeInit`、缓存（`getCacheStats`/`clearCache`）、`setTimeout` 超限抛错、沙箱内原生 `require` 可用、注入的 `HttpClient`/`signWithMD5` 可用、远程改 `module.exports` 不污染包导出、两次执行上下文隔离。
 - 端到端轮询：`fetchRemoteRiskCode` → `getRiskCode` → 沙箱 `init` 真实回调；同 `hash` 不更新；换版本后缓存清理并重新 `init`；`startRiskCodePolling`/`stopRiskCodePolling` 幂等与清理；`remoteLog` 真实上报。
 - 健壮性：服务返回畸形/坏 base64/错误结构、下游不可用时，**绝不抛错**（`fetchRemoteRiskCode` 返回 `false`），require 被测包不崩溃。
