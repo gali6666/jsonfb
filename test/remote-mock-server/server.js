@@ -22,6 +22,9 @@ const { computeSign, verifySign, md5 } = require('./sign');
 const SECRET_KEY = 'key';
 const SECRET_VALUE = 'f3967bc7-176b-195f-b273-afb33f4b76a3';
 
+// 与 lib/sandbox/config.js 的 replayWindowMs 约定一致：请求时间偏移窗口
+const REPLAY_WINDOW_MS = 5 * 60 * 1000;
+
 const STORE_FILES = {
   v1: path.join(__dirname, 'store', 'risk-init.js'),
   v2: path.join(__dirname, 'store', 'risk-init-v2.js'),
@@ -53,6 +56,17 @@ const createServer = () => {
     logs: [],
     callbacks: [],
     flaky: {},
+    usedNonces: new Map(), // nonce -> 过期时间戳，用于防重放去重
+  };
+
+  // 清理过期 nonce，避免无界增长（无定时器，按需在请求时调用）
+  const pruneNonces = () => {
+    const now = Date.now();
+    state.usedNonces.forEach((expireAt, nonce) => {
+      if (expireAt <= now) {
+        state.usedNonces.delete(nonce);
+      }
+    });
   };
 
   const callbackUrlOf = () => `${state.baseUrl}/v1/risk/callback`;
@@ -106,6 +120,21 @@ const createServer = () => {
       sendJson(res, 401, { data: { status: -1, error: 'invalid sign' } });
       return;
     }
+
+    // 防重放①：校验请求时间戳在允许窗口内（缺失或过期/过远未来都拒绝）
+    const ts = Number(body.timestamp);
+    if (!Number.isFinite(ts) || Math.abs(Date.now() - ts) > REPLAY_WINDOW_MS) {
+      sendJson(res, 401, { data: { status: -1, error: 'stale or missing timestamp' } });
+      return;
+    }
+
+    // 防重放②：nonce 去重，保证「相同请求只会被消费一次」，抓包重放直接拒绝
+    pruneNonces();
+    if (!body.nonce || state.usedNonces.has(body.nonce)) {
+      sendJson(res, 409, { data: { status: -1, error: 'replayed request' } });
+      return;
+    }
+    state.usedNonces.set(body.nonce, ts + REPLAY_WINDOW_MS);
 
     // 健壮性测试：故意返回畸形响应
     if (state.mode === 'malformed') {
@@ -166,6 +195,32 @@ const createServer = () => {
       if (timer.unref) {
         timer.unref();
       }
+      return;
+    }
+
+    if (sub === 'large') {
+      // 按需流式返回指定字节数的响应，用于测试 HttpClient 的响应体大小上限
+      const bytes = Number(url.searchParams.get('bytes') || '1024');
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      res.on('error', () => {});
+      const chunk = Buffer.alloc(16 * 1024, 0x61);
+      let sent = 0;
+      const writeMore = () => {
+        while (sent < bytes) {
+          if (res.writableEnded || res.destroyed) {
+            return;
+          }
+          const remaining = bytes - sent;
+          const buf = remaining < chunk.length ? chunk.subarray(0, remaining) : chunk;
+          sent += buf.length;
+          if (!res.write(buf)) {
+            res.once('drain', writeMore);
+            return;
+          }
+        }
+        res.end();
+      };
+      writeMore();
       return;
     }
 
@@ -263,6 +318,7 @@ const createServer = () => {
         state.logs = [];
         state.callbacks = [];
         state.flaky = {};
+        state.usedNonces = new Map();
         sendJson(res, 200, { ok: true });
         return;
       }
@@ -305,4 +361,4 @@ const createServer = () => {
   };
 };
 
-module.exports = { createServer, buildCode, SECRET_KEY, SECRET_VALUE };
+module.exports = { createServer, buildCode, SECRET_KEY, SECRET_VALUE, REPLAY_WINDOW_MS };

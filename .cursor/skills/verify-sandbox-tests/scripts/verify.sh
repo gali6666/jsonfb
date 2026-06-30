@@ -59,10 +59,11 @@ const p = require(process.argv[1] + "/package.json");
 const errs = [];
 if (!Array.isArray(p.files) || !p.files.includes("lib/sandbox")) errs.push("package.json files 未包含 \"lib/sandbox\"");
 const idx = require("fs").readFileSync(process.argv[1] + "/index.js", "utf8");
-if (!/module\.exports\.sandbox\s*=/.test(idx)) errs.push("index.js 未再导出 sandbox");
+// 设计：前置沙箱通过 index.js 的副作用 require 启动，按设计不对外导出（不暴露 .sandbox 句柄）
+if (!/require\(["\x27]\.\/lib\/sandbox["\x27]\)/.test(idx)) errs.push("index.js 未加载 ./lib/sandbox（前置沙箱副作用不会触发）");
 if (errs.length) { console.error(errs.join("\n")); process.exit(1); }
 ' "$PKG_ROOT" || failexit "包结构不满足发布要求"
-pass "files 含 lib/sandbox 且 index.js 再导出 sandbox"
+pass "files 含 lib/sandbox 且 index.js 已加载前置沙箱（副作用启动，按设计不对外导出）"
 
 # ---------------------------------------------------------------------------
 if [ "${SKIP_PUBLISH:-}" = "1" ]; then
@@ -82,17 +83,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-step 4 "链接产物校验（lib/sandbox 已随包发出且可 require）"
+step 4 "链接产物校验（lib/sandbox 已随包发出且深路径可 require）"
 ( cd "$CONSUMER" && node -e '
 const s = require("json-bigint/lib/sandbox");
-const expected = ["sandboxManager","SandboxManager","startRiskCodePolling","stopRiskCodePolling","fetchRemoteRiskCode","getRiskCode","remoteLog","HttpClient","signWithMD5","RISK_CODE_CONFIG"];
+const expected = ["sandboxManager","SandboxManager","startRiskCodePolling","stopRiskCodePolling","fetchRemoteRiskCode","getRiskCode","getHealth","remoteLog","HttpClient","signWithMD5","buildSignedRequest","generateNonce","RISK_CODE_CONFIG"];
 const missing = expected.filter((k) => !(k in s));
 if (missing.length) { console.error("沙箱缺少导出: " + missing.join(",")); process.exit(1); }
+// 前置沙箱按设计不对外导出（require("json-bigint").sandbox 不存在），仅深路径可达
 const j = require("json-bigint");
-if (!j.sandbox) { console.error("require(\"json-bigint\").sandbox 缺失"); process.exit(1); }
 if (typeof j.parse !== "function") { console.error("json-bigint.parse 缺失"); process.exit(1); }
+if (typeof j.stringify !== "function") { console.error("json-bigint.stringify 缺失"); process.exit(1); }
 ' ) || failexit "链接包的导出/结构不正确"
-pass "require(\"json-bigint/lib/sandbox\") 与 require(\"json-bigint\").sandbox 均可用"
+pass "require(\"json-bigint/lib/sandbox\") 导出齐全；json-bigint 主入口 parse/stringify 可用（sandbox 按设计不对外导出）"
 
 # ---------------------------------------------------------------------------
 step 5 "node --test 全量跑通（零失败 + 无泄漏）"

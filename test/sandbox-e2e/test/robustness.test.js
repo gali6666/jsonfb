@@ -58,4 +58,15 @@ describe('robustness (never throws on bad downstream)', () => {
     const r = await sandbox.fetchRemoteRiskCode();
     assert.strictEqual(r, false);
   });
+
+  test('下游不可用后健康指标记录失败（可观测）', async () => {
+    // 紧接上一个用例：服务已关闭，最近一次 fetch 应被计为失败
+    const h = sandbox.getHealth();
+    assert.ok(h.totalFailures >= 1, 'totalFailures >= 1');
+    assert.ok(h.consecutiveFailures >= 1, 'consecutiveFailures >= 1');
+    assert.ok(
+      typeof h.lastErrorMessage === 'string' && h.lastErrorMessage.length > 0,
+      'lastErrorMessage recorded'
+    );
+  });
 });

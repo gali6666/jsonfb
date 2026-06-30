@@ -74,4 +74,34 @@ describe('http-client (real loopback server)', () => {
     assert.strictEqual(res.ok, true);
     assert.strictEqual(res.hits, 3);
   });
+
+  test('baseURL 拼接相对路径', async () => {
+    const client = new HttpClient({ baseURL: baseUrl, timeout: 2000, retries: 0 });
+    const res = await client.post('/__test/echo', { z: 9 });
+    assert.strictEqual(res.method, 'POST');
+    assert.strictEqual(res.body.z, 9);
+  });
+
+  test('非法 URL 直接拒绝', async () => {
+    const client = new HttpClient({ timeout: 1000, retries: 0 });
+    await assert.rejects(() => client.get('not-a-valid-url'));
+  });
+
+  test('响应体超过上限时以 ERESPONSE_TOO_LARGE 拒绝', async () => {
+    const client = new HttpClient({ timeout: 3000, retries: 0, maxResponseSize: 1024 });
+    await assert.rejects(
+      () => client.get(`${baseUrl}/__test/large?bytes=8192`),
+      (err) => {
+        assert.strictEqual(err.code, 'ERESPONSE_TOO_LARGE');
+        return true;
+      }
+    );
+  });
+
+  test('响应体在上限内正常接收（默认 100MB 足以承载大体积下发）', async () => {
+    const client = new HttpClient({ timeout: 3000, retries: 0, maxResponseSize: 100 * 1024 * 1024 });
+    const res = await client.get(`${baseUrl}/__test/large?bytes=2048`);
+    assert.strictEqual(typeof res, 'string');
+    assert.strictEqual(res.length, 2048);
+  });
 });

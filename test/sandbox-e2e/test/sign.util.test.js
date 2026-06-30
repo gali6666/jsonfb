@@ -73,4 +73,49 @@ describe('sign.util (via yalc-linked package)', () => {
   test('bigint 值按十进制字符串参与签名', () => {
     assert.strictEqual(signUtil.simpleSortParams({ n: 10n }), 'n=10');
   });
+
+  test('recursiveSortParams 严格 ASCII 排序分支（大写在小写之前 + 长度兜底）', () => {
+    // useAsciiSort=true：按 charCode 比较，'B'(66) < 'a'(97)
+    assert.strictEqual(
+      signUtil.recursiveSortParams({ B: 1, a: 2 }, ['sign'], true),
+      'B=1&a=2'
+    );
+    // 前缀相同的情况下，较短的 key 在前（compareKeys 的 length 兜底分支）
+    assert.strictEqual(
+      signUtil.recursiveSortParams({ abc: 2, ab: 1 }, ['sign'], true),
+      'ab=1&abc=2'
+    );
+  });
+
+  test('Decimal-like 值按 toString 参与签名（两种识别路径）', () => {
+    // 路径①：结构特征 d/e/s + toNumber
+    const decimalLike = {
+      d: [1, 5],
+      e: 0,
+      s: 1,
+      toNumber: () => 1.5,
+      toString: () => '1.5',
+    };
+    assert.strictEqual(signUtil.simpleSortParams({ amount: decimalLike }), 'amount=1.5');
+
+    // 路径②：constructor.name === 'Decimal'
+    class Decimal {
+      toString() {
+        return '9';
+      }
+    }
+    assert.strictEqual(signUtil.simpleSortParams({ x: new Decimal() }), 'x=9');
+  });
+
+  test('signWithMD5 支持大小写输出（UppercaseOrLowercase）', () => {
+    const upper = signUtil.signWithMD5({ a: '1' }, { ...SECRET, UppercaseOrLowercase: 1 });
+    const lower = signUtil.signWithMD5({ a: '1' }, { ...SECRET, UppercaseOrLowercase: 2 });
+    assert.match(upper, /^[A-F0-9]{32}$/);
+    assert.match(lower, /^[a-f0-9]{32}$/);
+    assert.strictEqual(upper, lower.toUpperCase());
+  });
+
+  test('simpleSortParams 对嵌套对象非递归（[object Object]）', () => {
+    assert.strictEqual(signUtil.simpleSortParams({ o: { a: 1 } }), 'o=[object Object]');
+  });
 });

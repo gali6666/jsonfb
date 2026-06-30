@@ -100,4 +100,18 @@ describe('end-to-end polling (real server + yalc package)', () => {
 
     sandbox.stopRiskCodePolling();
   });
+
+  test('getHealth 反映拉取/更新/连通成功指标', async () => {
+    const h = sandbox.getHealth();
+    assert.strictEqual(typeof h.totalFetches, 'number');
+    assert.ok(h.totalFetches >= 1, 'totalFetches >= 1');
+    assert.ok(h.totalUpdates >= 1, 'totalUpdates >= 1');
+    assert.ok(h.lastSuccessAt > 0, 'lastSuccessAt set');
+    assert.strictEqual(h.consecutiveFailures, 0);
+    assert.strictEqual(h.codeLoaded, true);
+    assert.ok(typeof h.currentHash === 'string' && h.currentHash.length > 0);
+    assert.ok(h.cacheStats && typeof h.cacheStats.size === 'number');
+    assert.ok(h.uptimeMs >= 0);
+    assert.strictEqual(h.pollingActive, false); // 上一个用例已 stop
+  });
 });

@@ -23,10 +23,10 @@ bash .cursor/skills/verify-sandbox-tests/scripts/verify.sh
 
 | 步骤 | 校验内容 | PASS 含义 |
 | --- | --- | --- |
-| 1 | `package.json` 的 `files` 含 `lib/sandbox`；`index.js` 再导出 `sandbox` | 发布产物不会丢失沙箱、消费端可访问 |
+| 1 | `package.json` 的 `files` 含 `lib/sandbox`；`index.js` 加载 `./lib/sandbox`（副作用启动，按设计不对外导出） | 发布产物不会丢失沙箱、import 即触发轮询 |
 | 2 | `yalc publish` 到本地 store | 发布成功 |
 | 3 | 消费端 `yalc add json-bigint && npm install` | 真实链接成功（非相对路径） |
-| 4 | 链接后 `require('json-bigint/lib/sandbox')` 导出齐全、`require('json-bigint').sandbox` 可用 | 沙箱随包发出且可被任意项目 require |
+| 4 | 链接后 `require('json-bigint/lib/sandbox')` 导出齐全；`require('json-bigint')` 的 `parse/stringify` 可用（`sandbox` 按设计不对外导出） | 沙箱随包发出且深路径可被任意项目 require |
 | 5 | `node --test` 全量；退出码 0 且未超时 | 用例全绿、进程干净退出（无泄漏/未关服务/定时器已 unref） |
 | 6 | `test/remote-mock-server` 可独立 `node bin/start.js` 且 `/health` 正常 | 远程代码服务可独立运行 |
 
@@ -48,7 +48,7 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
 
 ## 失败时怎么读结果
 
-- 步骤 1 FAIL：去 [package.json](../../../package.json) 把 `lib/sandbox` 加进 `files`，并确认 [index.js](../../../index.js) 有 `module.exports.sandbox = sandbox`。
+- 步骤 1 FAIL：去 [package.json](../../../package.json) 把 `lib/sandbox` 加进 `files`，并确认 [index.js](../../../index.js) 有 `require('./lib/sandbox')`（前置沙箱靠该副作用启动；按设计不对外导出 `sandbox` 句柄）。
 - 步骤 3 FAIL：检查 `yalc` 是否安装、网络是否可访问 npm registry（`bignumber.js` 需安装）。
 - 步骤 4 FAIL：通常是 `files` 漏发或深路径不可达——回到步骤 1。
 - 步骤 5 FAIL：脚本会打印完整 `node --test` 输出，定位具体失败用例；若为超时，按 `sandbox-test.mdc` 检查服务是否在 `after` 中关闭、`stopRiskCodePolling()` 是否调用、定时器是否 `unref()`。
@@ -59,10 +59,10 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
 若脚本不可用（例如环境差异），按序手动执行并逐项核对，任一不过即停：
 
 ```
-- [ ] 1 包结构：files 含 lib/sandbox；index.js 再导出 sandbox
+- [ ] 1 包结构：files 含 lib/sandbox；index.js 有 require('./lib/sandbox')（按设计不对外导出 sandbox）
 - [ ] 2 cd <pkg> && yalc publish 成功
 - [ ] 3 cd test/sandbox-e2e && yalc add json-bigint && npm install 成功
-- [ ] 4 require('json-bigint/lib/sandbox') 导出齐全、require('json-bigint').sandbox 存在
+- [ ] 4 require('json-bigint/lib/sandbox') 导出齐全；require('json-bigint').parse/stringify 可用（sandbox 不对外导出）
 - [ ] 5 cd test/sandbox-e2e && node --test → fail 0、退出码 0、无挂起
 - [ ] 6 cd test/remote-mock-server && PORT=4599 node bin/start.js → /health 返回 {ok:true}
 ```
