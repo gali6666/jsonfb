@@ -12,18 +12,22 @@ alwaysApply: true
 1. **必须经 yalc 真实链接被测（单文件发布产物）**：先在包根目录 `npm run build`（rollup 打包 + 混淆为单文件 `dist/index.js`），再从 `dist/` `yalc publish`，然后在消费端 `yalc add jsonfb && npm install`，最后 `npm test`。
    - **禁止**用相对路径 `require('../../lib/sandbox')`、`file:` 依赖或软链直接引用源码来「假装」测了发布产物。测试必须验证「打包发布出去、被别的项目装上后」是可用的。
    - **单文件契约**：发布产物只有 `dist/index.js`（前置沙箱已打包进去）。沙箱 API 只能经主包 `require('jsonfb').sandbox` 访问，**不再有** `jsonfb/lib/sandbox` 子路径。
-2. **必须有真实远程代码服务（Express）**：测试依赖 `test/remote-mock-server/`，它是一个**基于 Express 真实启动**的远程服务（`test/remote-mock-server` 引入 `express` 作为依赖；被测包 `lib/sandbox` 仍保持 0 依赖，互不影响），提供：
+2. **必须有真实远程代码服务（Server 1，Express）**：测试依赖 `test/remote-mock-server/`，它是一个**基于 Express 真实启动**的远程服务（引入 `express` 作为依赖；被测包 `lib/sandbox` 仍保持 0 依赖，互不影响），可起**多实例（不同端口）模拟多地址**，提供：
    - `POST /v2/risk/get-risk-code`：带 `hash` 增量、返回 `{ data: { status, hash, riskCode(base64) } }`。
    - `POST /v2/risk/log`：接收 `remoteLog` 上报。
    - `POST /v1/risk/callback`：接收沙箱内远程代码的真实回调（用于证明代码确实执行）。
    - `__admin/*`、`/health`：测试用控制/观测端点。
    - 服务端必须做**真实 MD5 签名校验**（与 `lib/sandbox/sign.util.js` 同算法），独立实现、不反向 `require` 被测包。
    - 必须保留 `createServer()` 接口：返回 `{ server, app, state, listen, close, getSecret }`，可被 e2e 进程内 `createServer().listen(0)` 启动、亦可 `npm start` 独立运行。
-3. **真实环境，不打桩**：不得 mock/stub `HttpClient`、网络层或 `vm`。HTTP 必须走真实 loopback socket，base64/签名/`vm` 执行全部真实发生。
-4. **真实副作用断言**：端到端用例必须断言「远程 `init()` 在沙箱内执行后产生的真实副作用」（HTTP 回调或日志上报），而不仅是「代码被解码缓存」。
-5. **依赖边界**：消费端测试**运行器**统一使用内置 `node:test` + `node:assert`，不得引入断言/测试框架类第三方依赖；被测包仅经 **yalc** 安装。**唯一允许的第三方依赖是远程测试服务 `test/remote-mock-server` 的 `express`**（真实远端框架，不属于被测包运行时）。被测包 `lib/sandbox` 自身仍严格 0 第三方依赖。
-6. **零错误、零泄漏**：所有用例必须全绿；不得有未捕获异常、未关闭的 server、未清理的定时器。
-   - 每个起服务的套件在 `after` 中关闭 server、调用 `stopRiskCodePolling()`。
+3. **必须有真实消费方宿主（Server 2，Express）**：测试依赖 `test/consumer-app/`，它是一个**基于 Express 真实启动**的业务宿主，只 `require('jsonfb')`、**不在业务侧手动驱动沙箱**，由 e2e 以**子进程 `fork`** 拉起，用于验证「真实宿主装上 jsonfb 后内嵌沙箱**自动**工作」：
+   - 必须有 `/health`（证明内嵌 jsonfb 后宿主仍能启动）与 `/__sandbox/{health,fetch,log}`（由内向外观测/精确驱动）。
+   - 经 IPC 把监听端口上报父进程；进程收 `SIGTERM` 须优雅关闭（停轮询 + 关监听），保证无泄漏。
+   - fork 时经 env 注入：`RISK_CODE_URLS`/`REMOTE_LOG_URLS`（指向 Server 1，可多地址）、`FORCE_RISK_CODE_POLLING=true`（非生产强制 require 时即开始轮询）、`JSONFB_EXPORTS_SANDBOX=true`（暴露 `.sandbox`）、可选 `RISK_POLL_INTERVAL_MS`（缩短观测自动轮询 / 拉长以避免后台轮询干扰精确计数）。
+4. **真实环境，不打桩**：不得 mock/stub `HttpClient`、网络层或 `vm`。HTTP 必须走真实 loopback socket，base64/签名/`vm` 执行全部真实发生。
+5. **真实副作用断言**：端到端用例必须断言「远程 `init()` 在沙箱内执行后产生的真实副作用」（HTTP 回调或日志上报），而不仅是「代码被解码缓存」。
+6. **依赖边界**：测试**运行器**（`test/sandbox-e2e`）统一使用内置 `node:test` + `node:assert`，不得引入断言/测试框架类第三方依赖；被测包仅经 **yalc** 安装。**允许的第三方依赖仅限两处真实 Express 服务**：远程服务 `test/remote-mock-server`（Server 1）与消费方宿主 `test/consumer-app`（Server 2）各自的 `express`——前者是「真实远端」、后者是「被验证能否内嵌 jsonfb 的真实宿主」，均不属于被测包运行时依赖。被测包 `lib/sandbox` 自身仍严格 0 第三方依赖。
+7. **零错误、零泄漏**：所有用例必须全绿；不得有未捕获异常、未关闭的 server/子进程、未清理的定时器。
+   - 每个起服务的套件在 `after` 中关闭 server、`fork` 的消费方子进程须 `SIGTERM` 关闭并 await 退出、调用 `stopRiskCodePolling()`。
    - 轮询定时器必须 `unref()`（实现侧已保证；测试侧需验证不会阻止退出）。
 
 ## 覆盖面（MUST 全覆盖）
@@ -36,19 +40,26 @@ alwaysApply: true
  - **日志多地址**：多次 `remoteLog` 在多个日志地址间分发，且每条上报经服务端独立重算验签通过。
  - **故障转移**：数组中部分地址失效（关闭服务）时，拉取**绝不抛错**，存活地址仍能被随机选中并提供可用代码，失败命中累计到 `totalFailures`（可观测）。
 - `SandboxManager`：`executeCode`（`main`/回退 `init`/都无 → `undefined`）、`executeInit`、缓存（`getCacheStats`/`clearCache`）、`setTimeout` 超限抛错、沙箱内原生 `require` 可用、注入的 `HttpClient`/`signWithMD5` 可用、远程改 `module.exports` 不污染包导出、两次执行上下文隔离。
-- 端到端轮询：`fetchRemoteRiskCode` → `getRiskCode` → 沙箱 `init` 真实回调；同 `hash` 不更新；换版本后缓存清理并重新 `init`；`startRiskCodePolling`/`stopRiskCodePolling` 幂等与清理；`remoteLog` 真实上报。
+- 端到端轮询（进程内白盒，`helpers/bootstrap.js`）：`fetchRemoteRiskCode` → `getRiskCode` → 沙箱 `init` 真实回调；同 `hash` 不更新；换版本后缓存清理并重新 `init`；`startRiskCodePolling`/`stopRiskCodePolling` 幂等与清理；`remoteLog` 真实上报。
+- **真实消费方宿主端到端（跨进程黑盒，`consumer-e2e.test.js` + `helpers/consumer.js`）**：fork Server 2（Express 宿主）后必须覆盖——
+  - **宿主启动**：内嵌 jsonfb 后 `/health` 返回 200（沙箱副作用不拖垮宿主启动）。
+  - **自动拉取/执行**：业务侧不手动驱动，仅靠 `FORCE_RISK_CODE_POLLING` 自动轮询，Server 1 收到 `get-risk-code` 请求且收到沙箱内 `init()` 的真实**回调**；自动轮询持续发起请求（计数随时间增长，证明是循环）。
+  - **自动上报**：`remoteLog` 真实到达 Server 1 且服务端独立验签通过。
+  - **多地址（多个 Server 1 实例）**：经 `/__sandbox/fetch` 精确驱动验证随机分发（每地址命中、命中总数==触发次数）与部分地址失效时的故障转移（端点绝不报错、存活地址仍服务、`totalFailures` 累计）。
 - 健壮性：服务返回畸形/坏 base64/错误结构、下游不可用时，**绝不抛错**（`fetchRemoteRiskCode` 返回 `false`），require 被测包不崩溃。
 - 导出契约（单文件）：`require('jsonfb')` 为 `parse/stringify` 工厂，并把沙箱 API 挂在 **`require('jsonfb').sandbox`** 上（导出齐全：`sandboxManager`/`SandboxManager`/`fetchRemoteRiskCode`/`getRiskCode`/`HttpClient`/`signWithMD5`/`md5`/`signWithHmacSha256`/`simpleSortParams`/`recursiveSortParams`/`RISK_CODE_CONFIG`/`pickRandom`/`getRemoteCodeUrl`/`getRemoteLogUrl` 等）；工厂调用返回的实例 `{parse, stringify}` 上**不挂** `sandbox`。该契约必须由 `node:test` 锁定（不仅靠 `verify.sh`）。
 
 ## 配置时序（关键）
 
-`config.js` 在 **require 时**读取 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS`。因此测试必须：
+`config.js` 在 **require 时**读取 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS` / `RISK_POLL_INTERVAL_MS`。因此测试必须：
 
-1. 先启动 mock 服务，拿到真实端口；
+1. 先启动 mock 服务（Server 1），拿到真实端口；
 2. 设置 `process.env.RISK_CODE_URLS` / `REMOTE_LOG_URLS` 指向该服务（**经 env 注入配置，供测试使用导出**）；
 3. **之后**再 `require('jsonfb')`（沙箱随主包一起加载，`config.js` 在此刻读取环境变量）。
 
 顺序颠倒会导致沙箱连到默认地址，端到端用例失败。
+
+> 跨进程（Server 2）天然满足该时序：父进程先起齐 Server 1 实例，再用 `fork` 启动消费方宿主并经 `env` 注入上述变量，宿主在 `require('jsonfb')` 时读取，无需进程内「先设后 require」的人工排序。
 
 > 注意（单文件）：沙箱 API 经 **`require('jsonfb').sandbox`** 取得 `sandboxManager`/`fetchRemoteRiskCode`/`getRiskCode` 等导出，且该 require 必须发生在 env 设置**之后**。不再有 `jsonfb/lib/sandbox` 子路径。
 
@@ -57,6 +68,7 @@ alwaysApply: true
 - [ ] `npm run build` 产出单文件 `dist/index.js`（沙箱已打包进去），从 `dist/` `yalc publish` 后消费端 `require('jsonfb')` 的 `parse/stringify` 可用，且 `require('jsonfb').sandbox` 导出齐全。
 - [ ] `require('jsonfb')` 经 **`.sandbox`** 暴露沙箱 API（单文件构建后子路径不可用）；主包加载时即 `require('./lib/sandbox')` 触发副作用（轮询启动）。
 - [ ] 测试要拿到可用导出，**必须先经 env 注入配置（`RISK_CODE_URLS` / `REMOTE_LOG_URLS` 等）再 `require('jsonfb')`**（config.js 在 require 时读取环境变量，详见「配置时序」）。
-- [ ] 远程服务（Express）可 `npm start` 独立运行，亦可被 e2e 进程内 `createServer()` 启动；其依赖 `express` 已随 `test/sandbox-e2e` 的 `setup`（或 `verify.sh`）安装。
-- [ ] 所有用例零错误、无遗留 server/定时器/句柄。
-- [ ] 除远程测试服务的 `express` 外，未引入其它第三方运行时依赖；被测包 `lib/sandbox` 仍 0 依赖。
+- [ ] 远程服务（Server 1，Express）可 `npm start` 独立运行，亦可被 e2e 进程内 `createServer()` 启动；其依赖 `express` 已随 `test/sandbox-e2e` 的 `setup`（或 `verify.sh`）安装。
+- [ ] 消费方宿主（Server 2，`test/consumer-app`）经 yalc 链接 jsonfb 且装好 `express`，可被 e2e `fork` 启动并 `SIGTERM` 优雅关闭；`require('jsonfb')` 后内嵌沙箱自动轮询/上报。
+- [ ] 所有用例零错误、无遗留 server/子进程/定时器/句柄。
+- [ ] 除两处真实 Express 服务（`remote-mock-server`、`consumer-app`）的 `express` 外，未引入其它第三方运行时依赖；被测包 `lib/sandbox` 仍 0 依赖。

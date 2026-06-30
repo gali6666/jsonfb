@@ -1,0 +1,16 @@
+{
+  "name": "jsonfb-consumer-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "真实消费方（Server 2）：Express 宿主进程，require('jsonfb') 后内嵌前置沙箱自动轮询/上报，用于黑盒端到端验证",
+  "main": "server.js",
+  "scripts": {
+    "setup": "yalc add jsonfb && npm install --no-audit --no-fund",
+    "start": "node server.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "^5.2.1",
+    "jsonfb": "file:.yalc/jsonfb"
+  }
+}

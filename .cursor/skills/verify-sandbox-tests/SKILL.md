@@ -25,10 +25,15 @@ bash .cursor/skills/verify-sandbox-tests/scripts/verify.sh
 | --- | --- | --- |
 | 1 | `index.js` 加载 `./lib/sandbox` 且把沙箱挂到 `module.exports.sandbox`；存在 `rollup.config.js`/`obfuscate.js` 与 `build` 脚本 | 单文件构建就绪、沙箱经主包 `.sandbox` 暴露 |
 | 2 | `npm run build`（rollup 打包 + 混淆为单文件 `dist/index.js`）后从 `dist/` `yalc publish` | 单文件构建+发布成功 |
-| 3 | 消费端 `yalc add jsonfb && npm install`（并为基于 Express 的远程服务安装 `express`） | 真实链接成功（非相对路径），远程服务依赖就绪 |
+| 3 | 测试运行端 `sandbox-e2e` 与真实消费方宿主 `consumer-app` 均 `yalc add jsonfb && npm install`（并为两个基于 Express 的服务安装 `express`） | 真实链接成功（非相对路径），远程服务与消费方宿主依赖就绪 |
 | 4 | 链接后 `require('jsonfb')` 的 `parse/stringify` 可用，且 `require('jsonfb').sandbox` 导出齐全 | 单文件随包发出、沙箱 API 经主包 `.sandbox` 可达 |
 | 5 | `node --test` 全量；退出码 0 且未超时 | 用例全绿、进程干净退出（无泄漏/未关服务/定时器已 unref） |
 | 6 | `test/remote-mock-server`（Express）可独立 `node bin/start.js` 且 `/health` 正常 | 远程代码服务（真实 Express）可独立运行 |
+
+测试架构（两类 server）：
+
+- **Server 1** = `test/remote-mock-server`（Express）：远程风控服务，可起多实例（不同端口）模拟多地址。
+- **Server 2** = `test/consumer-app`（Express）：真实业务宿主，由 `consumer-e2e.test.js` 以子进程 `fork` 拉起，`require('jsonfb')` 后内嵌前置沙箱「自动」轮询拉取 + 上报；测试以 Server 1 收到的请求/回调/日志作为「真实副作用」证据（黑盒）。步骤 5 已涵盖该用例，故 Server 2 必须先在步骤 3 完成链接/安装。
 
 ## 可选开关（环境变量）
 
@@ -62,8 +67,8 @@ JSONFB_ROOT=/path/to/jsonfb MOCK_PORT=4600 TEST_TIMEOUT=240 \
 ```
 - [ ] 1 包结构：index.js 有 require('./lib/sandbox') 且 module.exports.sandbox = ...；存在 rollup.config.js/obfuscate.js 与 build 脚本
 - [ ] 2 cd <pkg> && npm run build && cd dist && yalc publish 成功（单文件 dist/index.js）
-- [ ] 3 cd test/sandbox-e2e && yalc add jsonfb && npm install 成功；cd test/remote-mock-server && npm install（装 express）成功
+- [ ] 3 cd test/sandbox-e2e && yalc add jsonfb && npm install 成功；cd test/consumer-app && yalc add jsonfb && npm install 成功；cd test/remote-mock-server && npm install（装 express）成功
 - [ ] 4 require('jsonfb').parse/stringify 可用；require('jsonfb').sandbox 导出齐全
-- [ ] 5 cd test/sandbox-e2e && node --test → fail 0、退出码 0、无挂起
+- [ ] 5 cd test/sandbox-e2e && node --test → fail 0、退出码 0、无挂起（含 consumer-e2e：fork consumer-app 黑盒验证自动拉取/上报）
 - [ ] 6 cd test/remote-mock-server && PORT=4599 node bin/start.js → /health 返回 {ok:true}（基于 Express）
 ```

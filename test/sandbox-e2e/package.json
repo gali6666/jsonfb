@@ -4,7 +4,7 @@
   "private": true,
   "description": "通过 yalc 链接 jsonfb，对前置沙箱做真实环境端到端测试（node:test）",
   "scripts": {
-    "setup": "yalc add jsonfb && npm install && npm --prefix ../remote-mock-server install --no-audit --no-fund",
+    "setup": "yalc add jsonfb && npm install && npm --prefix ../remote-mock-server install --no-audit --no-fund && npm --prefix ../consumer-app run setup",
     "test": "JSONFB_EXPORTS_SANDBOX=true node --test"
   },
   "license": "MIT",
