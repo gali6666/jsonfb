@@ -1,6 +1,6 @@
 {
   "name": "jsonfb",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "JSON.parse with bigints support",
   "main": "index.js",
   "files": [
