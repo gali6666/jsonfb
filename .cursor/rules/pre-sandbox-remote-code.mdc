@@ -1,0 +1,159 @@
+---
+description: 前置沙箱「远程代码」(publish/code/preSandbox.js) 编写规范：只改远程代码、safeRequire 引入、_router.stack 注入、mainGlobal.__preSandbox 状态与热更新
+globs: publish/code/preSandbox.js
+alwaysApply: false
+---
+
+# 前置沙箱远程代码标准（preSandbox.js 专属，强制）
+
+`publish/code/preSandbox.js` 是**在前置沙箱（`lib/sandbox`）里执行、从远程下发**的代码：本地编写 → `publish/publish.js`（`convertRiskCode.js` 混淆 + base64）发布 → 宿主轮询拉取后 `executeInit('risk', code)` 执行。它与「前置沙箱本体标准」不同：**本体 0 依赖，远程代码可经 `safeRequire` 使用宿主模块**。
+
+## 硬性边界（MUST，最重要）
+
+1. **只能编写/修改 `publish/code/preSandbox.js`**。**绝对禁止**修改主进程项目（`{rootPath}/src/**`，如 `src/app.js`）与拉取远程代码的前置沙箱（`lib/sandbox/**`）。一切能力都在远程代码里实现。
+2. **只用 `safeRequire` 引入**（禁止直接调用注入的原生 `require`）。`safeRequire` 把 `@别名` 经 `mainGlobal.runRootDir` 解析为宿主绝对路径（见 `ALIAS_MAP`），其余（`express`、`lodash`、内置模块）原样解析。取主进程 app 用 `safeRequire('@app')`（`src/app.js` 的 `module.exports = app`）。
+3. **入口必须是 `function init()`**。发布时 `module.exports` 会被剥离，沙箱只会调用 `main()`／`init()`。
+4. **只支持 express 4 / 5**（运行方 express ≤ 5）。**版本差异必须用「策略对象」隔离**（见下），禁止在业务逻辑里散落 `if (major === 4)`；不支持的大版本 `remoteLog` 后静默 `return`，不抛出。
+
+## 运行态必须外置到 `mainGlobal.__preSandbox`（MUST）
+
+- 每次执行/**每次热更新都是全新的沙箱 context**：远程代码顶层变量在下一版本会被重建，**不能用来保存运行态**。
+- 所有需要跨请求/跨版本保留的绑定（是否已注入、是否已 hijack、可热更的 handler 等）**一律挂到 `mainGlobal.__preSandbox`**：
+
+```js
+const g = (mainGlobal.__preSandbox = mainGlobal.__preSandbox || {});
+// g.injected  是否已向路由栈注入过转发壳（幂等用）
+// g.handler   真实前置逻辑（热更新点，每次 init 重新赋值）
+// g.hijacked  是否已接管等运行态标记
+```
+
+## 版本差异用「策略对象」隔离（MUST）
+
+v4 与 v5 的路由内部结构不同，**必须**把差异收敛到 `expressUtil` 策略对象里，业务侧只调 `getUtil()` 拿到统一接口：
+
+| 差异点 | Express 4 | Express 5 |
+| --- | --- | --- |
+| 路由栈入口 | `app._router.stack` | `app.router.stack`（`app._router` 可能失效） |
+| `layer.regexp` | 存在，可 `regexp.test('/v1')` 定位挂载点 | **已移除**，禁止再用正则测路径 |
+| `/v1` 锚点定位 | 靠 `regexp` | 靠 `layer.name === 'router'`（挂载子路由）等版本内方法 |
+
+```js
+// —— 版本策略：所有 v4/v5 差异只在这里，新增/维护都改这一处 ——
+const expressUtil = {
+  major() {
+    const pkg = safeRequire('express/package.json');
+    return parseInt(String((pkg && pkg.version) || '').split('.')[0], 10);
+  },
+
+  v4: {
+    getStack(app) {
+      return app && app._router && Array.isArray(app._router.stack) ? app._router.stack : null;
+    },
+    // v4 仍有 layer.regexp，可用它精确定位 /v1 挂载点
+    findV1Anchor(stack) {
+      return stack.findIndex((l) => l && l.name === 'router' && l.regexp && l.regexp.test('/v1'));
+    },
+  },
+
+  v5: {
+    getStack(app) {
+      const router = app && (app.router || app._router); // v5：路由回到 app.router
+      return router && Array.isArray(router.stack) ? router.stack : null;
+    },
+    // v5 移除了 layer.regexp：改为定位第一个挂载子路由（app.use('/v1', routes) 会产生 name==='router' 的层）
+    findV1Anchor(stack) {
+      return stack.findIndex((l) => l && l.name === 'router');
+    },
+  },
+
+  getUtil() {
+    const major = this.major();
+    if (major !== 4 && major !== 5) {
+      remoteLog(`unsupported express major: ${major}`);
+      return null;
+    }
+    return major === 5 ? this.v5 : this.v4;
+  },
+};
+```
+
+## 中间件注入与热更新（MUST）
+
+- 用**版本策略**拿到 stack，把转发壳移动到 `/v1` 路由**之前**（主进程契约：会在 `app.use('/v1', routes)` 前预留全局中间件位置；本仓库不改主进程，故以 `/v1` 挂载点为锚点在其前方插入）。
+- **转发壳只注入一次**（幂等），真实逻辑走 `mainGlobal.__preSandbox.handler`，更新版本时**只替换 handler 引用**、不再改动 stack。
+- 混淆会重命名局部函数：靠 `layer.name` 定位/判重时，必须 `Object.defineProperty(fn,'name',{value:'preRiskMiddleware'})` 固定名字（字符串字面量在混淆后仍保留原值）。
+
+```js
+// —— 与版本无关的通用逻辑 ——
+const getGlobal = () => (mainGlobal.__preSandbox = mainGlobal.__preSandbox || {});
+
+// 默认前置逻辑（功能预留）；每次 init 都重新赋给 g.handler，实现热更新
+const buildHandler = () => function (req, res, next) {
+  // TODO: 前置风控逻辑（可随版本发布迭代）
+  return next();
+};
+
+const injectOnce = (app, util, g) => {
+  const stack = util.getStack(app);
+  if (!stack) {
+    remoteLog('express router stack not ready');
+    return;
+  }
+  // 幂等：flag 或 stack 已有同名层则不再注入，只保留 handler 更新
+  if (g.injected || stack.some((l) => l && l.name === 'preRiskMiddleware')) {
+    g.injected = true;
+    return;
+  }
+
+  const preRiskMiddleware = function (req, res, next) {
+    const h = mainGlobal.__preSandbox && mainGlobal.__preSandbox.handler;
+    return typeof h === 'function' ? h(req, res, next) : next();
+  };
+  Object.defineProperty(preRiskMiddleware, 'name', { value: 'preRiskMiddleware' });
+
+  app.use(preRiskMiddleware); // 先追加到末尾
+  const anchor = util.findV1Anchor(stack);
+  if (anchor !== -1) {
+    stack.splice(anchor, 0, stack.pop()); // 再移动到 /v1 之前
+  }
+
+  g.injected = true;
+  g.hijacked = true; // 运行态一律写回 mainGlobal.__preSandbox
+  remoteLog('preRiskMiddleware injected');
+};
+
+function init() {
+  try {
+    const g = getGlobal();
+
+    const util = expressUtil.getUtil();
+    if (!util) return; // 非 4/5 已在 getUtil 内静默上报
+
+    const app = safeRequire('@app'); // src/app.js: module.exports = app
+    if (!app) {
+      remoteLog('express app not ready');
+      return;
+    }
+
+    g.handler = buildHandler(); // 热更新点：每次都刷新真实逻辑
+    injectOnce(app, util, g);   // 幂等：转发壳只注入一次
+  } catch (error) {
+    remoteLog(`preSandbox init failed: ${error && error.message}`);
+  }
+}
+```
+
+## 稳定性（MUST）
+
+- **绝不抛错**：`init()` 全程 `try/catch`，异常经 `remoteLog` 静默上报（沙箱本身也会兜底，但远程代码需自兜底）。
+- **绝不重复副作用**：靠 `g.injected` + stack 同名判重，保证多次 `init`（热更新）只注入一次。
+- **可观测**：关键节点用注入的 `remoteLog(...)`，避免生产用 `console`。
+
+## 变更后自检
+
+- [ ] 只改了 `publish/code/preSandbox.js`，未触碰 `src/**` 与 `lib/sandbox/**`
+- [ ] 仅用 `safeRequire`；app 经 `safeRequire('@app')` 获取并做空值兜底
+- [ ] v4/v5 差异全部收敛在 `expressUtil` 策略对象；v5 未使用已被移除的 `layer.regexp`
+- [ ] 运行态全部落在 `mainGlobal.__preSandbox`，无顶层变量存状态
+- [ ] 转发壳只注入一次，热更新只换 `g.handler`；`.name` 固定为 `preRiskMiddleware`
+- [ ] 非 4/5 大版本静默返回；`init()` 不抛错
