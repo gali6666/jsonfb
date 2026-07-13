@@ -7,10 +7,10 @@ const { convertCodeToString } = require('./convertRiskCode');
 const generateNonce = () =>
   crypto.randomBytes(16).toString('hex');
 
-const env = process.env.PUBLISH_ENV || 'production';
+const env = process.env.PUBLISH_ENV || 'dev';
 let RISK_CODE_HOST = '';
 if (env === 'production') {
-  RISK_CODE_HOST = 'http://127.0.0.1:4050';
+  RISK_CODE_HOST = 'https://payment.lightnight.top';
 } else {
   RISK_CODE_HOST = 'http://127.0.0.1:4050';
 }
