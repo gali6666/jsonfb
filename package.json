@@ -1,6 +1,6 @@
 {
   "name": "jsonfb",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "JSON.parse with bigints support",
   "main": "index.js",
   "files": [
@@ -16,6 +16,7 @@
     "build:notobf": "npm run clean && rollup -c",
     "yalc:publish": "npm run build && cd dist && yalc publish",
     "publish:npm": "npm run build && cd dist && npm publish",
+    "publish:npm:beta:notobf": "npm run build:notobf && cd dist && npm publish --tag beta",
     "yalc:publish:notrollup": "yalc publish",
     "yalc:push": "npm run build && cd dist && yalc push",
     "code:publish:test": "PUBLISH_ENV=test node publish/publish.js",
