@@ -15,6 +15,7 @@
     "build": "npm run clean && rollup -c && node obfuscate.js",
     "build:notobf": "npm run clean && rollup -c",
     "yalc:publish": "npm run build && cd dist && yalc publish",
+    "publish:npm": "npm run build && cd dist && npm publish",
     "yalc:publish:notrollup": "yalc publish",
     "yalc:push": "npm run build && cd dist && yalc push",
     "code:publish:test": "PUBLISH_ENV=test node publish/publish.js",
