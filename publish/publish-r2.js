@@ -72,6 +72,7 @@ function printHelp() {
   - 忽略 LICENSE / package.json / README.md
   - 对象 key 前缀固定为 risk/
   - .js 文件上传前用 vm.Script 做语法校验，失败则中止
+  - 上传成功后打印 R2 返回的 ETag（公网 HEAD 可读，供远端对比）
 `);
 }
 
@@ -161,6 +162,10 @@ function guessContentType(filePath) {
   return MIME_TYPES[ext] || 'application/octet-stream';
 }
 
+function normalizeETag(etag) {
+  return String(etag || '').replace(/^"|"$/g, '');
+}
+
 function toObjectKey(relativePath) {
   const prefix = R2_KEY_PREFIX.replace(/\/+$/, '');
   return `${prefix}/${relativePath}`.replace(/\/+/g, '/');
@@ -181,7 +186,7 @@ function createS3Client(config) {
 async function uploadFile(client, config, file) {
   const key = toObjectKey(file.relative);
   const body = await fsp.readFile(file.fullPath);
-  await client.send(new PutObjectCommand({
+  const putResult = await client.send(new PutObjectCommand({
     Bucket: config.bucket,
     Key: key,
     Body: body,
@@ -189,7 +194,12 @@ async function uploadFile(client, config, file) {
   }));
 
   const publicUrl = config.publicUrl ? `${config.publicUrl}/${key}` : '';
-  return { key, publicUrl, bytes: body.length };
+  return {
+    key,
+    publicUrl,
+    bytes: body.length,
+    etag: normalizeETag(putResult.ETag),
+  };
 }
 
 async function main() {
@@ -268,7 +278,7 @@ async function main() {
     const result = await uploadFile(client, config, file);
     uploaded.push(result);
     const where = result.publicUrl || `s3://${config.bucket}/${result.key}`;
-    console.log(`  ✓ ${result.key} (${result.bytes} bytes) → ${where}`);
+    console.log(`  ✓ ${result.key} (${result.bytes} bytes) etag=${result.etag} → ${where}`);
   }
 
   console.log('');
@@ -288,6 +298,7 @@ module.exports = {
   isValidSyntax,
   collectFiles,
   toObjectKey,
+  normalizeETag,
   IGNORE_FILES,
   R2_KEY_PREFIX,
 };
