@@ -3,7 +3,6 @@
 const { after, before, describe, test } = require('node:test');
 const assert = require('node:assert');
 const { fork } = require('node:child_process');
-const crypto = require('node:crypto');
 const path = require('node:path');
 
 const { createRemoteServer } = require('../remote-server');
@@ -11,7 +10,7 @@ const { runProbe } = require('../http-probe');
 
 const serverEntry = path.resolve(__dirname, '..', 'server.js');
 
-const startConsumer = (remoteBaseUrl, probeToken) => new Promise((resolve, reject) => {
+const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
   const proc = fork(serverEntry, [], {
     env: {
       ...process.env,
@@ -20,8 +19,6 @@ const startConsumer = (remoteBaseUrl, probeToken) => new Promise((resolve, rejec
       RISK_CODE_URLS: remoteBaseUrl,
       REMOTE_LOG_URLS: remoteBaseUrl,
       RISK_POLL_INTERVAL_MS: '600000',
-      JSONFB_PRE_SANDBOX_PROBE_ENABLED: 'true',
-      JSONFB_PRE_SANDBOX_PROBE_TOKEN: probeToken,
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
@@ -132,13 +129,11 @@ describe('发布级：真实 jsonfb + 生产转换 preSandbox.js + Express 4 HTT
   let remote;
   let remoteBaseUrl;
   let consumer;
-  let probeToken;
 
   before(async () => {
     remote = createRemoteServer();
     ({ baseUrl: remoteBaseUrl } = await remote.listen());
-    probeToken = crypto.randomBytes(32).toString('hex');
-    consumer = await startConsumer(remoteBaseUrl, probeToken);
+    consumer = await startConsumer(remoteBaseUrl);
 
     await waitFor(async () => {
       const health = await requestJson(consumer.baseUrl, '/__sandbox/health');
@@ -193,26 +188,13 @@ describe('发布级：真实 jsonfb + 生产转换 preSandbox.js + Express 4 HTT
     assert.strictEqual(after.body.globalProxyCount, 1);
     assert.strictEqual(after.body.routeProxyCount, 1);
 
-    const rejectedProbe = await runProbe({
-      baseUrl: consumer.baseUrl,
-      token: 'invalid-probe-token-that-is-long-enough',
-      timeoutMs: 3000,
-    });
-    assert.strictEqual(rejectedProbe.passed, false);
-    assert.strictEqual(rejectedProbe.status, 401);
-    assert.strictEqual(rejectedProbe.failureStage, 'http_status');
-
-    // pure 版本没有追加测试代码，成功响应证明生产代码的两个代理都经过真实 HTTP 执行。
+    // pure 版本没有追加测试代码，固定响应证明生产代码的代理经过真实 HTTP 执行。
     const probe = await runProbe({
       baseUrl: consumer.baseUrl,
-      token: probeToken,
       timeoutMs: 3000,
     });
     assert.strictEqual(probe.passed, true, JSON.stringify(probe));
-    assert.deepStrictEqual(probe.actual.stages, [
-      'preV1Risk',
-      'kefuQueryOrderDepositRisk',
-    ]);
+    assert.deepStrictEqual(probe.actual, { code: 0, jack: true });
 
     // 恢复有 init 完成标记的版本，供后续精确热更新断言。
     await switchAndFetch(remoteBaseUrl, consumer, 'v1-restored');

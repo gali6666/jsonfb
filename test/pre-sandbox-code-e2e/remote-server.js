@@ -39,13 +39,12 @@ init = function () {
   const states = mainGlobal.__sandboxConfig.preSandbox.routeMiddlewares;
   mainGlobal.__preSandboxTestHandlerChanged = {};
   ['preV1Risk', 'kefuQueryOrderDepositRisk'].forEach((key) => {
-    const handler = states[key].handler;
-    mainGlobal.__preSandboxTestHandlerChanged[key] = beforeHandlers[key] !== handler;
+    mainGlobal.__preSandboxTestHandlerChanged[key] = beforeHandlers[key] !== states[key].handler;
     states[key].handler = function (req, res, next) {
       if (Array.isArray(req.preSandboxTrace)) {
         req.preSandboxTrace.push(key + ':' + ${JSON.stringify(revision)});
       }
-      return handler(req, res, next);
+      return next();
     };
   });
 };

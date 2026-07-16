@@ -30,18 +30,15 @@ bash .cursor/skills/verify-pre-sandbox-code/scripts/verify.sh
 
 ## 独立环境探针
 
-正式项目显式开启 `JSONFB_PRE_SANDBOX_PROBE_ENABLED=true` 并配置至少 32 字符的
-`JSONFB_PRE_SANDBOX_PROBE_TOKEN` 后，可在本仓库独立运行同一个集成探针：
+可在本仓库独立运行同一个集成探针：
 
 ```bash
 JSONFB_PRE_SANDBOX_PROBE_BASE_URL=https://target.example \
-JSONFB_PRE_SANDBOX_PROBE_TOKEN='<secret>' \
 npm --prefix test/pre-sandbox-code-e2e run probe
 ```
 
 需要网关鉴权时可通过 `JSONFB_PRE_SANDBOX_PROBE_HEADERS_JSON` 传入请求头 JSON。
-命令只输出不含凭证的 JSON 总结，成功退出 0，失败退出 1。探针成功响应同时证明
-`preV1Risk` 全局代理和 `kefuQueryOrderDepositRisk` 接口代理按顺序执行。
+命令输出 JSON 总结，成功退出 0，失败退出 1；固定响应为 `{ "code": 0, "jack": true }`。
 
 任何一步失败都必须返回非零退出码。验证 `lib/sandbox/**` 时继续使用：
 
