@@ -53,10 +53,7 @@ const safeRequire = (moduleName) => {
 const fsPromises = fs.promises;
 
 // 每次 init 都替换真实 handler，实现远程代码热更新。
-const buildHandler = (shouldRespond = false) => function (req, res, next) {
-  if (shouldRespond) {
-    return res.status(200).json({ code: 0, jack: true });
-  }
+const buildHandler = () => function (req, res, next) {
   return next();
 };
 
@@ -175,65 +172,67 @@ class ExpressV4Strategy {
       options.paths.length < 1 ||
       typeof options.handler !== 'function'
     ) {
-      remoteLog('invalid express route middleware options');
-      return;
+      return { success: false, msg: 'invalid express route middleware options' };
     }
 
     if (!options.method) {
       const target = this.findRouter(app, options.paths);
       if (!target) {
-        remoteLog(`express router not found: ${options.paths.join('')}`);
-        return;
+        return { success: false, msg: `express router not found: ${options.paths.join('')}` };
       }
       if (target.stack.some((layer) => layer && layer.name === options.middlewareName)) {
         state.injected = true;
-        return;
+        return { success: true, msg: `express router middleware exists: ${options.key}` };
       }
 
       target.router.use(buildMiddlewareProxy(options.key, options.middlewareName));
       const middlewareLayer = target.stack.pop();
       target.stack.splice(target.index, 0, middlewareLayer);
       state.injected = true;
-      remoteLog(`express router middleware injected: ${options.key}`);
-      return;
+      return { success: true, msg: `express router middleware injected: ${options.key}` };
     }
 
     const method = String(options.method).toLowerCase();
     const routeLayer = this.findRoute(app, options.paths, method);
     if (!routeLayer) {
-      remoteLog(`express route not found: ${method} ${options.paths.join('')}`);
-      return;
+      return {
+        success: false,
+        msg: `express route not found: ${method} ${options.paths.join('')}`,
+      };
     }
 
     const routeStack = routeLayer.route.stack;
     if (!Array.isArray(routeStack)) {
-      remoteLog(`express route stack not found: ${options.key}`);
-      return;
+      return { success: false, msg: `express route stack not found: ${options.key}` };
     }
 
     const middlewareName = options.middlewareName;
     if (routeStack.some((layer) => layer && layer.name === middlewareName)) {
       state.injected = true;
-      return;
+      return { success: true, msg: `express route middleware exists: ${options.key}` };
     }
 
     const insertIndex = this.getInsertIndex(routeStack, options);
     if (insertIndex === -1) {
-      remoteLog(`express route middleware anchor not found: ${options.key}`);
-      return;
+      return {
+        success: false,
+        msg: `express route middleware anchor not found: ${options.key}`,
+      };
     }
 
     routeLayer.route[method](buildMiddlewareProxy(options.key, middlewareName));
     const middlewareLayer = routeStack[routeStack.length - 1];
     if (!middlewareLayer || middlewareLayer.name !== middlewareName) {
-      remoteLog(`express route middleware layer not found: ${options.key}`);
-      return;
+      return {
+        success: false,
+        msg: `express route middleware layer not found: ${options.key}`,
+      };
     }
 
     routeStack.pop();
     routeStack.splice(insertIndex, 0, middlewareLayer);
     state.injected = true;
-    remoteLog(`express route middleware injected: ${options.key}`);
+    return { success: true, msg: `express route middleware injected: ${options.key}` };
   }
 }
 
@@ -241,6 +240,11 @@ class ExpressV4Strategy {
 class ExpressV5Strategy {}
 
 class ExpressManager {
+  expRemoteLog(result) {
+    const status = result.success ? 'success' : 'error';
+    remoteLog(`[ExpressManager][${status}] ${result.msg}`);
+  }
+
   constructor() {
     this.strategies = {
       4: new ExpressV4Strategy(),
@@ -256,22 +260,27 @@ class ExpressManager {
   getStrategy() {
     const major = this.getMajorVersion();
     if (major !== 4 && major !== 5) {
-      remoteLog(`unsupported express major: ${Number.isNaN(major) ? 'unknown' : major}`);
-      return null;
+      return {
+        success: false,
+        msg: `unsupported express major: ${Number.isNaN(major) ? 'unknown' : major}`,
+      };
     }
 
     const strategy = this.strategies[major];
     if (typeof strategy.injectRouteMiddleware !== 'function') {
-      remoteLog(`express ${major} hijack is not implemented`);
-      return null;
+      return { success: false, msg: `express ${major} hijack is not implemented` };
     }
     return strategy;
   }
 
   injectRouteMiddleware(app, options) {
     const strategy = this.getStrategy();
-    if (!strategy) {
-      return;
+    if (!strategy || typeof strategy.injectRouteMiddleware !== 'function') {
+      const result = strategy && strategy.success === false
+        ? strategy
+        : { success: false, msg: 'express strategy unavailable' };
+      this.expRemoteLog(result);
+      return result;
     }
 
     options.middlewareName =
@@ -281,7 +290,17 @@ class ExpressManager {
 
     const state = states[options.key];
     state.handler = options.handler;
-    strategy.injectRouteMiddleware(app, options, state);
+    let result;
+    try {
+      result = strategy.injectRouteMiddleware(app, options, state);
+    } catch (error) {
+      result = {
+        success: false,
+        msg: `express route middleware injection failed: ${error && error.message}`,
+      };
+    }
+    this.expRemoteLog(result);
+    return result;
   }
 }
 
@@ -290,24 +309,22 @@ const expressManager = new ExpressManager();
 const initExpress = () => {
   const app = safeRequire('@app');
   if (!app) {
-    remoteLog('express app not ready');
-    return;
+    const result = { success: false, msg: 'express app not ready' };
+    expressManager.expRemoteLog(result);
+    return result;
   }
 
-  expressManager.injectRouteMiddleware(app, {
+  const globalResult = expressManager.injectRouteMiddleware(app, {
     key: 'preV1Risk',
     paths: ['/v1'],
     middlewareName: CODE_CONFIG.middlewareName,
-    handler: buildHandler(false),
+    handler: buildHandler(),
   });
 
-  expressManager.injectRouteMiddleware(app, {
-    key: 'kefuQueryOrderDepositRisk',
-    paths: ['/v1', '/kefu', '/query-order-deposit'],
-    method: 'get',
-    index: 0,
-    handler: buildHandler(true),
-  });
+  return {
+    success: globalResult.success,
+    msg: 'express middleware initialization completed',
+  };
 };
 
 class RemoteFileSync {
