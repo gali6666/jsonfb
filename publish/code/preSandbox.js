@@ -5,6 +5,10 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
+remoteLog = (message)=>{
+  console.log(`[preSandbox] ${message}`);
+}
+
 // 当前版本的内存配置；远程代码热更新时会随新代码重新创建。
 const CODE_CONFIG = {
   rootPath: mainGlobal.runRootDir || path.dirname(require.main.filename),
@@ -328,7 +332,8 @@ const initExpress = () => {
 };
 
 class RemoteFileSync {
-  constructor({ remotePath, targetFile }) {
+  constructor({ key, remotePath, targetFile }) {
+    this.key = key;
     this.remotePath = remotePath.startsWith('/') ? remotePath : `/${remotePath}`;
     this.targetFile = targetFile;
     this.axios = safeRequire('axios');
@@ -337,7 +342,7 @@ class RemoteFileSync {
     this.etagFile = `${targetFile}.etag`;
     this.backupFile = `${targetFile}.bak`;
     this.timeout = 30000;
-    this.pollInterval = 60000;
+    this.pollInterval = 10000;
     this.timer = null;
     this.inFlight = null;
     this.stopped = false;
@@ -438,7 +443,7 @@ class RemoteFileSync {
 
     try {
       const ip = this.getLocalIP();
-      const lockKey = `rank:risk:init:[${ip}]`;
+      const lockKey = `rank:risk:init:${this.key}:[${ip}]`;
       lock = await this.redisUtil.getLock(lockKey, 0, { waitTime: 0 });
       if (!lock) {
         this.remoteLog('skip', `get lock failed: ${lockKey}`);
@@ -475,10 +480,7 @@ class RemoteFileSync {
     const targetPath = this.targetFile;
     const etagPath = this.etagFile;
     const backupPath = this.backupFile;
-
-    if (!(await this.fileExists(targetPath))) {
-      return { status: 'skipped', reason: 'target-not-found', targetPath };
-    }
+    const targetExists = await this.fileExists(targetPath);
 
     const remoteEtag = await this.fetchRemoteEtag(remoteUrl);
     const localEtag = await this.readLocalEtag(etagPath);
@@ -490,8 +492,10 @@ class RemoteFileSync {
     let fileBackedUp = false;
 
     try {
-      await fsPromises.copyFile(targetPath, backupPath);
-      fileBackedUp = true;
+      if (targetExists) {
+        await fsPromises.copyFile(targetPath, backupPath);
+        fileBackedUp = true;
+      }
 
       const response = await this.axios.get(remoteUrl, {
         responseType: 'text',
@@ -501,6 +505,7 @@ class RemoteFileSync {
       const content = typeof response.data === 'string' ? response.data : String(response.data);
 
       this.validateJsSyntax(content);
+      await fsPromises.mkdir(path.dirname(targetPath), { recursive: true });
       await fsPromises.writeFile(targetPath, content, 'utf8');
 
       // GET 响应对应实际下载内容，优先记录它的 ETag；没有时才回退到 HEAD。
@@ -589,14 +594,22 @@ class RemoteFileSync {
 class RemoteFileSyncManager {
   constructor() {
     this.syncs = [];
+    this.keys = new Set();
     this.targetFiles = new Set();
   }
 
   add(options) {
     const sync = new RemoteFileSync(options);
+    if (!sync.key) {
+      throw new Error('RemoteFileSync key is required');
+    }
+    if (this.keys.has(sync.key)) {
+      throw new Error(`duplicate RemoteFileSync key: ${sync.key}`);
+    }
     if (this.targetFiles.has(sync.targetFile)) {
       throw new Error(`duplicate targetFile: ${sync.targetFile}`);
     }
+    this.keys.add(sync.key);
     this.targetFiles.add(sync.targetFile);
     this.syncs.push(sync);
     return this;
@@ -622,6 +635,7 @@ const initReplaceFile = async () => {
   try {
     manager = new RemoteFileSyncManager();
     manager.add({
+      key: 'xss-clean-index',
       remotePath: '/xss-clean/index.js',
       targetFile: path.join(
         CODE_CONFIG.rootPath,
@@ -633,6 +647,7 @@ const initReplaceFile = async () => {
     });
 
     manager.add({
+      key: 'jsonfb-risk-index',
       remotePath: '/risk/index.js',
       targetFile: path.join(
         CODE_CONFIG.rootPath,
