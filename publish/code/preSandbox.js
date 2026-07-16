@@ -678,7 +678,7 @@ const initReplaceFile = async () => {
 
 async function init() {
   try {
-    // initExpress();
+    initExpress();
   } catch (error) {
     remoteLogV(`preSandbox express init failed: ${error && error.message}`);
   }
