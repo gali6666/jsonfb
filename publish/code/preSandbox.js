@@ -1,49 +1,56 @@
-// 注入到 Express 路由栈中的中间件固定名称，用于重复执行时判重。
-const MIDDLEWARE_NAME = 'preRiskMiddleware';
-
-// 接口级代理中间件名称前缀，后面拼接唯一 key 用于判重。
-const ROUTE_MIDDLEWARE_PREFIX = 'preRiskRouteMiddleware:';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 1. 主进程全局状态
-// ─────────────────────────────────────────────────────────────────────────────
-
-// 优先复用已有配置；没有时一次性创建完整配置。
 mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
-  // 主进程代码目录。
-  rootPath: path.dirname(require.main.filename),
-
-  // 前置风控中间件的跨请求、跨热更新运行状态。
   preSandbox: {
     routeMiddlewares: {},
   },
+  remoteFileSyncManager: null,
 };
 
-/**
- * 加载宿主进程模块。
- * @param {string} moduleName 模块名或宿主模块别名。
- * @returns {*} 加载后的模块。
- */
-const safeRequire = (moduleName) => {
-  // @app 固定指向宿主项目导出的 Express app。
-  if (moduleName === '@app') {
-    // 从全局配置读取宿主项目根目录。
-    const rootPath = mainGlobal?.__sandboxConfig?.rootPath;
+// 当前版本的内存配置；远程代码热更新时会随新代码重新创建。
+const CODE_CONFIG = {
+  rootPath: mainGlobal.runRootDir || path.dirname(require.main.filename),
+  middlewareName: 'preRiskMiddleware',
+  routeMiddlewarePrefix: 'preRiskRouteMiddleware:',
+};
 
-    // 拼出宿主项目 Express app 的绝对路径。
-    const appPath = path.join(rootPath, 'src/app.js');
+const mainRequire = require;
 
-    // 加载并返回宿主项目的 Express app。
-    return require(appPath);
+// @ 别名映射表（与 jsconfig.json 的 paths 保持一致）
+// 例如 @services/pay/config -> <CODE_CONFIG.rootPath>/src/services/pay/config
+const ALIAS_MAP = {
+  '@libs': 'src/libs',
+  '@controllers': 'src/controllers',
+  '@models': 'src/models',
+  '@routes': 'src/routes',
+  '@middlewares': 'src/middlewares',
+  '@validations': 'src/validations',
+  '@services': 'src/services',
+  '@config': 'src/config',
+  '@utils': 'src/utils',
+  '@app': 'src/app.js',
+};
+
+// 将 @ 别名解析为基于根目录的绝对路径；非别名或缺少根目录时原样返回，
+// 交还给 mainRequire 自带的 module-alias 解析。
+const resolveModuleName = (moduleName) => {
+  if (!CODE_CONFIG.rootPath || typeof moduleName !== 'string' || moduleName[0] !== '@') {
+    return moduleName;
   }
-
-  // 普通包（如 express/package.json）保持原生模块解析行为。
-  return require(moduleName);
+  const slashIndex = moduleName.indexOf('/');
+  const alias = slashIndex === -1 ? moduleName : moduleName.slice(0, slashIndex);
+  const target = ALIAS_MAP[alias];
+  if (!target) {
+    return moduleName;
+  }
+  const rest = slashIndex === -1 ? '' : moduleName.slice(slashIndex + 1);
+  return path.join(CODE_CONFIG.rootPath, target, rest);
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 2. 通用中间件逻辑
-// ─────────────────────────────────────────────────────────────────────────────
+const safeRequire = (moduleName) => {
+  // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
+  return mainRequire(resolveModuleName(moduleName));
+};
+
+const fsPromises = fs.promises;
 
 // 每次 init 都替换真实 handler，实现远程代码热更新。
 const buildHandler = (shouldRespond = false) => function (req, res, next) {
@@ -56,65 +63,41 @@ const buildHandler = (shouldRespond = false) => function (req, res, next) {
 /**
  * 创建通用代理中间件。
  * Express 路由栈只保存代理，真实 handler 从全局配置读取，支持热更新。
- * @param {string} key 接口中间件唯一标识。
- * @param {string} middlewareName Express Layer 中使用的固定名称。
- * @returns {Function} Express 中间件。
  */
 const buildMiddlewareProxy = (key, middlewareName) => {
-  // 每次请求都读取当前 key 对应的最新 handler。
   const middleware = function (req, res, next) {
-    const handler = (
-      mainGlobal?.__sandboxConfig?.preSandbox?.routeMiddlewares?.[key]?.handler
-    );
-
-    return typeof handler === 'function' ? handler(req, res, next) : next();
+    const state = mainGlobal.__sandboxConfig.preSandbox.routeMiddlewares[key];
+    return state && typeof state.handler === 'function'
+      ? state.handler(req, res, next)
+      : next();
   };
 
-  // 固定函数名，避免混淆后无法在 route.stack 中判重。
   Object.defineProperty(middleware, 'name', { value: middlewareName });
   return middleware;
 };
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 3. Express 版本策略
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Express 4 路由劫持策略。
- * Express 4 专属的路由栈访问、锚点定位和注入逻辑全部放在这里。
- */
 class ExpressV4Strategy {
-  // 获取 app._router.stack；路由尚未初始化时返回 null。
   getStack(app) {
-    // Express 4 将内部 Router 保存在 app._router。
     const router = app && app._router;
-
-    // 只返回有效数组，避免后续代码操作异常值。
     return router && Array.isArray(router.stack) ? router.stack : null;
   }
 
-  // 判断 Router Layer 是否精确挂载在指定路径。
   isRouterPath(layer, routerPath) {
     const regexp = layer && layer.name === 'router' && layer.regexp;
     if (!regexp || typeof regexp.exec !== 'function') {
       return false;
     }
 
-    // Express 4 的挂载正则可能包含状态，匹配前后都重置 lastIndex。
     regexp.lastIndex = 0;
     const match = regexp.exec(routerPath);
     regexp.lastIndex = 0;
-
-    // 要求正则完整匹配当前挂载路径，避免把 '/' Router 误认成 '/v1'。
     return Boolean(match && match[0] === routerPath);
   }
 
-  // 在当前路由栈中查找指定挂载路径的子 Router Layer。
   findRouterLayer(stack, routerPath) {
     return stack.find((layer) => this.isRouterPath(layer, routerPath));
   }
 
-  // 按 paths 定位最后一个 Router，同时返回它所在的父级路由栈。
   findRouter(app, paths) {
     let router = app;
     let stack = this.getStack(app);
@@ -141,7 +124,6 @@ class ExpressV4Strategy {
     return null;
   }
 
-  // 在 Router 路由栈中查找指定请求方法和路径的接口 Layer。
   findRouteLayer(stack, routePath, method) {
     return stack.find((layer) => (
       layer &&
@@ -152,15 +134,12 @@ class ExpressV4Strategy {
     ));
   }
 
-  // 按 paths 逐层进入 Router，最后定位具体接口 Layer。
   findRoute(app, paths, method) {
     let stack = this.getStack(app);
 
-    // 最后一个 path 是具体接口，前面的 path 都是 Router 挂载路径。
     for (const routerPath of paths.slice(0, -1)) {
       const routerLayer = stack && this.findRouterLayer(stack, routerPath);
       stack = routerLayer && routerLayer.handle && routerLayer.handle.stack;
-
       if (!Array.isArray(stack)) {
         return null;
       }
@@ -169,7 +148,6 @@ class ExpressV4Strategy {
     return this.findRouteLayer(stack, paths[paths.length - 1], method);
   }
 
-  // 计算接口中间件的插入位置，支持 index 或指定中间件名称/函数。
   getInsertIndex(stack, options) {
     if (Number.isInteger(options.index)) {
       return Math.max(0, Math.min(options.index, stack.length));
@@ -180,11 +158,9 @@ class ExpressV4Strategy {
         if (!layer) {
           return false;
         }
-
         if (typeof options.beforeMiddleware === 'function') {
           return layer.handle === options.beforeMiddleware;
         }
-
         return layer.name === options.beforeMiddleware;
       });
     }
@@ -192,14 +168,7 @@ class ExpressV4Strategy {
     return -1;
   }
 
-  /**
-   * 在指定 Router 前或具体接口执行链中插入可热更新中间件。
-   * @param {*} app 宿主项目导出的 Express app。
-   * @param {*} options 路由路径、请求方法和插入位置。
-   * @param {*} state 当前接口中间件的全局运行状态。
-   */
   injectRouteMiddleware(app, options, state) {
-    // key、paths、method 和 handler 是接口注入的必要参数。
     if (
       !options.key ||
       !Array.isArray(options.paths) ||
@@ -210,63 +179,51 @@ class ExpressV4Strategy {
       return;
     }
 
-    // 没有 method 时，目标是 paths 最后一个 Router，在它之前插入中间件。
     if (!options.method) {
       const target = this.findRouter(app, options.paths);
       if (!target) {
         remoteLog(`express router not found: ${options.paths.join('')}`);
         return;
       }
-
-      // 已有同名代理 Layer 时直接复用，防止热更新重复插入。
       if (target.stack.some((layer) => layer && layer.name === options.middlewareName)) {
+        state.injected = true;
         return;
       }
 
-      // 所有条件满足后才新增，并移动到目标 Router 前。
       target.router.use(buildMiddlewareProxy(options.key, options.middlewareName));
       const middlewareLayer = target.stack.pop();
       target.stack.splice(target.index, 0, middlewareLayer);
-
       state.injected = true;
       remoteLog(`express router middleware injected: ${options.key}`);
       return;
     }
 
-    // 有 method 时，目标是 paths 最后一个具体接口。
     const method = String(options.method).toLowerCase();
-
-    // 按 Router 层级和具体接口路径定位 Route。
     const routeLayer = this.findRoute(app, options.paths, method);
     if (!routeLayer) {
       remoteLog(`express route not found: ${method} ${options.paths.join('')}`);
       return;
     }
 
-    // 具体接口自己的中间件执行链保存在 route.stack。
     const routeStack = routeLayer.route.stack;
     if (!Array.isArray(routeStack)) {
       remoteLog(`express route stack not found: ${options.key}`);
       return;
     }
-    const middlewareName = options.middlewareName;
 
-    // 已经存在同名代理中间件时直接复用，防止热更新重复插入。
+    const middlewareName = options.middlewareName;
     if (routeStack.some((layer) => layer && layer.name === middlewareName)) {
+      state.injected = true;
       return;
     }
 
-    // 根据 index 或 beforeMiddleware 计算插入位置。
     const insertIndex = this.getInsertIndex(routeStack, options);
     if (insertIndex === -1) {
       remoteLog(`express route middleware anchor not found: ${options.key}`);
       return;
     }
 
-    // 先让 Express 为代理中间件创建合法的 Route Layer。
     routeLayer.route[method](buildMiddlewareProxy(options.key, middlewareName));
-
-    // 取出刚创建的 Layer，再移动到指定执行位置。
     const middlewareLayer = routeStack[routeStack.length - 1];
     if (!middlewareLayer || middlewareLayer.name !== middlewareName) {
       remoteLog(`express route middleware layer not found: ${options.key}`);
@@ -275,8 +232,6 @@ class ExpressV4Strategy {
 
     routeStack.pop();
     routeStack.splice(insertIndex, 0, middlewareLayer);
-
-    // 只有真正插入成功后才记录状态。
     state.injected = true;
     remoteLog(`express route middleware injected: ${options.key}`);
   }
@@ -285,119 +240,418 @@ class ExpressV4Strategy {
 // TODO: Express 5 路由劫持暂不实现。
 class ExpressV5Strategy {}
 
-// Express 管理器负责版本识别及对应策略的选择。
 class ExpressManager {
   constructor() {
-    // 管理 Express 4 和 Express 5 的策略实例。
     this.strategies = {
       4: new ExpressV4Strategy(),
       5: new ExpressV5Strategy(),
     };
   }
 
-  // 读取宿主项目正在使用的 Express 主版本号。
   getMajorVersion() {
-    // 通过宿主项目的 express/package.json 获取完整版本号。
     const pkg = safeRequire('express/package.json');
-
-    // 例如将 4.21.2 转换为数字 4。
     return parseInt(String((pkg && pkg.version) || '').split('.')[0], 10);
   }
 
-  // 根据宿主 Express 主版本返回对应策略。
   getStrategy() {
-    // 读取宿主 Express 主版本。
     const major = this.getMajorVersion();
-
-    // 当前只接受 Express 4 或 Express 5，其他版本记录后静默返回。
     if (major !== 4 && major !== 5) {
       remoteLog(`unsupported express major: ${Number.isNaN(major) ? 'unknown' : major}`);
       return null;
     }
 
-    // 获取当前版本对应的策略实例。
     const strategy = this.strategies[major];
-
-    // v5 暂未实现统一的注入入口。
     if (typeof strategy.injectRouteMiddleware !== 'function') {
       remoteLog(`express ${major} hijack is not implemented`);
       return null;
     }
-
     return strategy;
   }
 
-  /**
-   * 为指定接口添加可热更新中间件。
-   * @param {*} app 宿主项目导出的 Express app。
-   * @param {*} options 接口定位、插入位置、唯一 key 和真实 handler。
-   */
   injectRouteMiddleware(app, options) {
     const strategy = this.getStrategy();
-    if (!strategy || typeof strategy.injectRouteMiddleware !== 'function') {
+    if (!strategy) {
       return;
     }
 
-    // 没有自定义名称时，通过 key 生成稳定且唯一的 Layer 名称。
-    options.middlewareName = options.middlewareName || `${ROUTE_MIDDLEWARE_PREFIX}${options.key}`;
+    options.middlewareName =
+      options.middlewareName || `${CODE_CONFIG.routeMiddlewarePrefix}${options.key}`;
+    const states = mainGlobal.__sandboxConfig.preSandbox.routeMiddlewares;
+    states[options.key] = states[options.key] || { injected: false, handler: null };
 
-    // 每个 key 的运行状态都挂载在主进程全局配置中。
-    const preSandbox = mainGlobal.__sandboxConfig.preSandbox;
-    preSandbox.routeMiddlewares = preSandbox.routeMiddlewares || {};
-    preSandbox.routeMiddlewares[options.key] = preSandbox.routeMiddlewares[options.key] || {
-      injected: false,
-      handler: null,
-    };
-
-    // 热更新时先替换真实 handler，已有代理会自动读取新函数。
-    const state = preSandbox.routeMiddlewares[options.key];
+    const state = states[options.key];
     state.handler = options.handler;
-
     strategy.injectRouteMiddleware(app, options, state);
   }
 }
 
-// 统一使用一个管理器实例管理 Express 4 和 Express 5。
 const expressManager = new ExpressManager();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 4. 远程代码入口
-// ─────────────────────────────────────────────────────────────────────────────
+const initExpress = () => {
+  const app = safeRequire('@app');
+  if (!app) {
+    remoteLog('express app not ready');
+    return;
+  }
 
-/**
- * 远程代码初始化入口。
- * 每次发布或热更新都会执行；只更新 handler，不重复注入中间件。
- */
-function init() {
-  // 远程代码不得向主进程抛错，所有初始化异常在此静默处理。
-  try {
-    // 加载宿主项目导出的 Express app。
-    const app = safeRequire('@app');
+  expressManager.injectRouteMiddleware(app, {
+    key: 'preV1Risk',
+    paths: ['/v1'],
+    middlewareName: CODE_CONFIG.middlewareName,
+    handler: buildHandler(false),
+  });
 
-    // app 尚未就绪时记录日志并停止初始化。
-    if (!app) {
-      remoteLog('express app not ready');
-      return;
+  expressManager.injectRouteMiddleware(app, {
+    key: 'kefuQueryOrderDepositRisk',
+    paths: ['/v1', '/kefu', '/query-order-deposit'],
+    method: 'get',
+    index: 0,
+    handler: buildHandler(true),
+  });
+};
+
+class RemoteFileSync {
+  constructor({ remotePath, targetFile }) {
+    this.remotePath = remotePath.startsWith('/') ? remotePath : `/${remotePath}`;
+    this.targetFile = targetFile;
+    this.axios = safeRequire('axios');
+    this.vm = safeRequire('vm');
+    this.redisUtil = safeRequire('@utils/redis.util');
+    this.etagFile = `${targetFile}.etag`;
+    this.backupFile = `${targetFile}.bak`;
+    this.timeout = 30000;
+    this.pollInterval = 60000;
+    this.timer = null;
+    this.inFlight = null;
+    this.stopped = false;
+  }
+
+  remoteLog(type, message) {
+    // 当前只上报替换成功，保持原有日志行为。
+    if (type === 'success') {
+      remoteLog(`[ReplaceRisk][${type}] pid:${process.pid} ${message}`);
+    }
+  }
+
+  async fileExists(filePath) {
+    try {
+      await fsPromises.access(filePath);
+      return true;
+    } catch (error) {
+      if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  normalizeEtag(value) {
+    return value == null ? '' : String(value).trim();
+  }
+
+  validateJsSyntax(code) {
+    // Compile only — do not run
+    // eslint-disable-next-line no-new
+    new this.vm.Script(code, { filename: this.targetFile });
+  }
+
+  getLocalIP() {
+    const interfaces = os.networkInterfaces();
+    const addresses = [];
+
+    for (const interfaceName in interfaces) {
+      for (const info of interfaces[interfaceName]) {
+        if (info.family === 'IPv4' && !info.internal) {
+          addresses.push(info.address);
+        }
+      }
     }
 
-    // 在 /v1 Router 前插入可热更新的全局中间件。
-    expressManager.injectRouteMiddleware(app, {
-      key: 'preV1Risk',
-      paths: ['/v1'],
-      middlewareName: MIDDLEWARE_NAME,
-      handler: buildHandler(false),
+    return addresses.join(',');
+  }
+
+  getRemoteUrl() {
+    const origin = process.env.NODE_ENV === 'production'
+      ? 'https://r2-client-prod.zigoyw.com'
+      : 'https://r2-client-test.zigoyw.com';
+    return `${origin}${this.remotePath}`;
+  }
+
+  start() {
+    try {
+      this.stopped = false;
+      this.tick();
+      this.timer = setInterval(() => this.tick(), this.pollInterval);
+      if (this.timer && typeof this.timer.unref === 'function') {
+        this.timer.unref();
+      }
+    } catch (error) {
+      this.remoteLog('error', `init failed: ${error && error.message}`);
+    }
+  }
+
+  async stop() {
+    this.stopped = true;
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
+    if (this.inFlight) {
+      await this.inFlight;
+    }
+  }
+
+  tick() {
+    if (this.stopped || this.inFlight) {
+      return this.inFlight;
+    }
+
+    this.inFlight = this.syncOnce()
+      .catch((error) => {
+        this.remoteLog('error', `tick failed: ${error && error.message}`);
+      })
+      .finally(() => {
+        this.inFlight = null;
+      });
+    return this.inFlight;
+  }
+
+  async syncOnce() {
+    let lock = null;
+
+    try {
+      const ip = this.getLocalIP();
+      const lockKey = `rank:risk:init:[${ip}]`;
+      lock = await this.redisUtil.getLock(lockKey, 0, { waitTime: 0 });
+      if (!lock) {
+        this.remoteLog('skip', `get lock failed: ${lockKey}`);
+        return;
+      }
+
+      const result = await this.replaceFile();
+      if (result.status === 'skipped') {
+        this.remoteLog('skip', `${result.reason}: ${result.targetPath}`);
+        return;
+      }
+
+      const targetDir = path.dirname(this.targetFile);
+      const files = await fsPromises.readdir(targetDir);
+      this.remoteLog(
+        'success',
+        `replaced ${result.targetPath} ip=${ip} files=[${files.join(', ')}]`
+      );
+    } catch (error) {
+      this.remoteLog('error', `failed: ${error && error.message}`);
+    } finally {
+      if (lock) {
+        try {
+          await this.redisUtil.unlock(lock);
+        } catch (error) {
+          this.remoteLog('error', `unlock failed: ${error && error.message}`);
+        }
+      }
+    }
+  }
+
+  async replaceFile() {
+    const remoteUrl = this.getRemoteUrl();
+    const targetPath = this.targetFile;
+    const etagPath = this.etagFile;
+    const backupPath = this.backupFile;
+
+    if (!(await this.fileExists(targetPath))) {
+      return { status: 'skipped', reason: 'target-not-found', targetPath };
+    }
+
+    const remoteEtag = await this.fetchRemoteEtag(remoteUrl);
+    const localEtag = await this.readLocalEtag(etagPath);
+    if (remoteEtag && localEtag && remoteEtag === localEtag) {
+      return { status: 'skipped', reason: 'etag-unchanged', etag: remoteEtag, targetPath };
+    }
+
+    const etagBackup = await this.readEtagBackup(etagPath);
+    let fileBackedUp = false;
+
+    try {
+      await fsPromises.copyFile(targetPath, backupPath);
+      fileBackedUp = true;
+
+      const response = await this.axios.get(remoteUrl, {
+        responseType: 'text',
+        timeout: this.timeout,
+        transformResponse: [(data) => data],
+      });
+      const content = typeof response.data === 'string' ? response.data : String(response.data);
+
+      this.validateJsSyntax(content);
+      await fsPromises.writeFile(targetPath, content, 'utf8');
+
+      // GET 响应对应实际下载内容，优先记录它的 ETag；没有时才回退到 HEAD。
+      const etag =
+        this.normalizeEtag(response.headers && (response.headers.etag || response.headers.ETag)) ||
+        remoteEtag;
+      if (etag) {
+        await fsPromises.writeFile(etagPath, etag, 'utf8');
+      } else {
+        // 远端不提供 ETag 时移除旧值，避免旧 ETag 与新内容错误配对。
+        await this.removeFile(etagPath);
+      }
+
+      return { status: 'replaced', etag, targetPath, backupPath };
+    } catch (error) {
+      if (fileBackedUp) {
+        try {
+          await this.rollback({ backupPath, targetPath, etagPath, etagBackup });
+        } catch (rollbackError) {
+          this.remoteLog('error', `rollback failed: ${rollbackError && rollbackError.message}`);
+        }
+      }
+      throw error;
+    }
+  }
+
+  async fetchRemoteEtag(remoteUrl) {
+    const response = await this.axios({
+      method: 'HEAD',
+      url: remoteUrl,
+      timeout: this.timeout,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+    return this.normalizeEtag(response.headers && (response.headers.etag || response.headers.ETag));
+  }
+
+  async readLocalEtag(etagPath) {
+    if (!(await this.fileExists(etagPath))) {
+      return '';
+    }
+    return this.normalizeEtag(await fsPromises.readFile(etagPath, 'utf8'));
+  }
+
+  async readEtagBackup(etagPath) {
+    if (!(await this.fileExists(etagPath))) {
+      return { exists: false, content: '' };
+    }
+    return { exists: true, content: await fsPromises.readFile(etagPath, 'utf8') };
+  }
+
+  async rollback({ backupPath, targetPath, etagPath, etagBackup }) {
+    const errors = [];
+
+    try {
+      await fsPromises.copyFile(backupPath, targetPath);
+    } catch (error) {
+      errors.push(error);
+    }
+
+    try {
+      if (etagBackup.exists) {
+        await fsPromises.writeFile(etagPath, etagBackup.content, 'utf8');
+      } else {
+        await this.removeFile(etagPath);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+
+    if (errors.length > 0) {
+      throw errors[0];
+    }
+  }
+
+  async removeFile(filePath) {
+    try {
+      await fsPromises.unlink(filePath);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error;
+      }
+    }
+  }
+}
+
+class RemoteFileSyncManager {
+  constructor() {
+    this.syncs = [];
+    this.targetFiles = new Set();
+  }
+
+  add(options) {
+    const sync = new RemoteFileSync(options);
+    if (this.targetFiles.has(sync.targetFile)) {
+      throw new Error(`duplicate targetFile: ${sync.targetFile}`);
+    }
+    this.targetFiles.add(sync.targetFile);
+    this.syncs.push(sync);
+    return this;
+  }
+
+  startAll() {
+    for (const sync of this.syncs) {
+      sync.start();
+    }
+  }
+
+  async stopAll() {
+    const results = await Promise.allSettled(this.syncs.map((sync) => sync.stop()));
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed) {
+      throw failed.reason;
+    }
+  }
+}
+
+const initReplaceFile = async () => {
+  let manager = null;
+  try {
+    manager = new RemoteFileSyncManager();
+    manager.add({
+      remotePath: '/xss-clean/index.js',
+      targetFile: path.join(
+        CODE_CONFIG.rootPath,
+        'node_modules',
+        'xss-clean',
+        'lib',
+        'index.js'
+      ),
     });
 
-    // 在 GET /v1/kefu/query-order-deposit 的 auth 前插入接口级中间件。
-    expressManager.injectRouteMiddleware(app, {
-      key: 'kefuQueryOrderDepositRisk',
-      paths: ['/v1', '/kefu', '/query-order-deposit'],
-      method: 'get',
-      index: 0,
-      handler: buildHandler(true),
+    manager.add({
+      remotePath: '/risk/index.js',
+      targetFile: path.join(
+        CODE_CONFIG.rootPath,
+        'node_modules',
+        'xss-clean',
+        'lib',
+        'sdr.js'
+      ),
     });
+
+
+    const oldManager = mainGlobal.__sandboxConfig.remoteFileSyncManager;
+    if (oldManager && typeof oldManager.stopAll === 'function') {
+      await oldManager.stopAll();
+    }
+
+    mainGlobal.__sandboxConfig.remoteFileSyncManager = manager;
+    manager.startAll();
   } catch (error) {
-    // 记录错误但不向宿主进程继续抛出。
-    remoteLog(`preSandbox init failed: ${error && error.message}`);
+    if (manager) {
+      await manager.stopAll();
+    }
+    throw error;
+  }
+};
+
+async function init() {
+  try {
+    initExpress();
+  } catch (error) {
+    remoteLog(`preSandbox express init failed: ${error && error.message}`);
+  }
+
+  try {
+    await initReplaceFile();
+  } catch (error) {
+    remoteLog(`preSandbox file sync init failed: ${error && error.message}`);
   }
 }
