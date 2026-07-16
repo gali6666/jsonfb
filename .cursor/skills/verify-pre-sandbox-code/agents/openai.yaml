@@ -1,0 +1,4 @@
+interface:
+  display_name: "验证远程 PreSandbox 代码"
+  short_description: "本地验证 Express 4 路由劫持、热更新与防重复注入"
+  default_prompt: "使用 $verify-pre-sandbox-code 运行远程 preSandbox 代码的本地端到端验证。"

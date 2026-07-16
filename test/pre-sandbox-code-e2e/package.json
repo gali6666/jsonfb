@@ -1,0 +1,14 @@
+{
+  "name": "jsonfb-pre-sandbox-code-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "description": "publish/code/preSandbox.js 的 Express 4 本地黑盒端到端测试",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "express": "4.21.2",
+    "jsonfb": "file:.yalc/jsonfb"
+  }
+}
