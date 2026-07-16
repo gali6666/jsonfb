@@ -21,9 +21,13 @@ const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
+  let stdout = '';
   let stderr = '';
   let settled = false;
 
+  proc.stdout.on('data', (chunk) => {
+    stdout += chunk.toString();
+  });
   proc.stderr.on('data', (chunk) => {
     stderr += chunk.toString();
   });
@@ -32,15 +36,15 @@ const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
     if (settled) return;
     settled = true;
     proc.kill('SIGKILL');
-    reject(new Error(`真实 jsonfb 消费端启动超时\n${stderr}`));
-  }, 8000);
+    reject(new Error(`真实 jsonfb 消费端启动超时\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+  }, 10000);
 
   proc.on('message', (message) => {
     if (settled || !message) return;
     if (message.type === 'listening') {
       settled = true;
       clearTimeout(timer);
-      resolve({ proc, baseUrl: message.baseUrl });
+      resolve({ proc, baseUrl: message.baseUrl, output: () => ({ stdout, stderr }) });
     } else if (message.type === 'error') {
       settled = true;
       clearTimeout(timer);
@@ -49,6 +53,7 @@ const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
   });
 
   proc.once('exit', (code, signal) => {
+    proc.preSandboxTestExit = { code, signal };
     if (settled) return;
     settled = true;
     clearTimeout(timer);
@@ -56,15 +61,31 @@ const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
   });
 });
 
-const stopConsumer = (proc) => new Promise((resolve) => {
+const stopConsumer = (proc) => new Promise((resolve, reject) => {
   if (!proc || proc.exitCode != null || proc.signalCode != null) {
+    const outcome = proc?.preSandboxTestExit || {
+      code: proc?.exitCode,
+      signal: proc?.signalCode,
+    };
+    if (proc && (outcome.code !== 0 || outcome.signal !== null)) {
+      reject(new Error(`消费端已异常退出 code=${outcome.code} signal=${outcome.signal}`));
+      return;
+    }
     resolve();
     return;
   }
 
-  const timer = setTimeout(() => proc.kill('SIGKILL'), 2500);
-  proc.once('exit', () => {
+  let forced = false;
+  const timer = setTimeout(() => {
+    forced = true;
+    proc.kill('SIGKILL');
+  }, 2500);
+  proc.once('exit', (code, signal) => {
     clearTimeout(timer);
+    if (forced || code !== 0 || signal !== null) {
+      reject(new Error(`消费端未干净退出 code=${code} signal=${signal}`));
+      return;
+    }
     resolve();
   });
   proc.kill('SIGTERM');
@@ -75,7 +96,7 @@ const requestJson = async (baseUrl, pathname, options) => {
   return { status: response.status, body: await response.json() };
 };
 
-const waitFor = async (predicate, label, timeout = 8000) => {
+const waitFor = async (predicate, label, timeout = 10000) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeout) {
     // eslint-disable-next-line no-await-in-loop
@@ -86,7 +107,24 @@ const waitFor = async (predicate, label, timeout = 8000) => {
   throw new Error(`等待超时：${label}`);
 };
 
-describe('真实 jsonfb + 远程 preSandbox.js + Express 4 HTTP e2e', () => {
+const switchAndFetch = async (remoteBaseUrl, consumer, revision) => {
+  const before = await requestJson(consumer.baseUrl, '/__test/state');
+  const switched = await requestJson(remoteBaseUrl, `/__admin/revision/${revision}`, {
+    method: 'POST',
+  });
+  assert.strictEqual(switched.status, 200);
+
+  const fetched = await requestJson(consumer.baseUrl, '/__sandbox/fetch', { method: 'POST' });
+  assert.strictEqual(fetched.status, 200);
+  assert.strictEqual(fetched.body.updated, true);
+  assert.strictEqual(fetched.body.revision, revision);
+  assert.strictEqual(fetched.body.initCount, before.body.initCount + 1);
+  assert.strictEqual(fetched.body.handlerChanged.preV1Risk, true);
+  assert.strictEqual(fetched.body.handlerChanged.kefuQueryOrderDepositRisk, true);
+  return fetched.body;
+};
+
+describe('发布级：真实 jsonfb + 生产转换 preSandbox.js + Express 4 HTTP e2e', { concurrency: false }, () => {
   let remote;
   let remoteBaseUrl;
   let consumer;
@@ -96,29 +134,64 @@ describe('真实 jsonfb + 远程 preSandbox.js + Express 4 HTTP e2e', () => {
     ({ baseUrl: remoteBaseUrl } = await remote.listen());
     consumer = await startConsumer(remoteBaseUrl);
 
-    // 等待真实 jsonfb 完成首次自动拉取和 init。
     await waitFor(async () => {
       const health = await requestJson(consumer.baseUrl, '/__sandbox/health');
       const state = await requestJson(consumer.baseUrl, '/__test/state');
-      return health.body.codeLoaded && state.body.globalProxyCount === 1;
-    }, 'jsonfb 自动拉取并执行 preSandbox.js');
+      return (
+        health.body.codeLoaded &&
+        state.body.revision === 'v1' &&
+        state.body.globalProxyCount === 1 &&
+        state.body.routeProxyCount === 1
+      );
+    }, 'jsonfb 自动拉取并执行生产转换后的 preSandbox.js');
   });
 
   after(async () => {
-    await stopConsumer(consumer && consumer.proc);
-    if (remote) await remote.close();
+    try {
+      await stopConsumer(consumer && consumer.proc);
+    } finally {
+      if (remote) await remote.close();
+    }
   });
 
-  test('消费端真实安装 jsonfb，并从远程服务拉取代码', async () => {
+  test('消费端使用 yalc 安装的混淆 jsonfb，远程代码使用生产转换器混淆并 Base64 下发', async () => {
+    const packageInfo = await requestJson(consumer.baseUrl, '/__test/package');
     const remoteState = await requestJson(remoteBaseUrl, '/__admin/state');
     const health = await requestJson(consumer.baseUrl, '/__sandbox/health');
 
+    assert.match(packageInfo.body.jsonfbPath, /pre-sandbox-code-e2e\/(?:\.yalc|node_modules)\/jsonfb/);
+    assert.strictEqual(packageInfo.body.expressVersion.split('.')[0], '4');
     assert.ok(remoteState.body.fetchCount >= 1);
+    assert.strictEqual(remoteState.body.validFetchCount, remoteState.body.fetchCount);
+    assert.strictEqual(remoteState.body.artifact.obfuscated, true);
+    assert.strictEqual(remoteState.body.artifact.decodedContainsSource, true);
+    assert.ok(remoteState.body.artifact.base64Length > remoteState.body.artifact.sourceLength);
     assert.strictEqual(health.body.codeLoaded, true);
-    assert.ok(typeof health.body.currentHash === 'string' && health.body.currentHash.length > 0);
+    assert.strictEqual(health.body.currentHash, remoteState.body.hash);
   });
 
-  test('客户端真实请求按全局代理、接口代理、auth、controller 顺序执行', async () => {
+  test('逐字生产 preSandbox.js 不附加测试代码也能成功执行 init', async () => {
+    const before = await requestJson(consumer.baseUrl, '/__test/state');
+    const switched = await requestJson(remoteBaseUrl, '/__admin/revision/pure', {
+      method: 'POST',
+    });
+    assert.strictEqual(switched.status, 200);
+
+    const fetched = await requestJson(consumer.baseUrl, '/__sandbox/fetch', { method: 'POST' });
+    assert.strictEqual(fetched.body.updated, true);
+    assert.strictEqual(fetched.body.handlerChanged.preV1Risk, true);
+    assert.strictEqual(fetched.body.handlerChanged.kefuQueryOrderDepositRisk, true);
+
+    const after = await requestJson(consumer.baseUrl, '/__test/state');
+    assert.strictEqual(after.body.initCount, before.body.initCount);
+    assert.strictEqual(after.body.globalProxyCount, 1);
+    assert.strictEqual(after.body.routeProxyCount, 1);
+
+    // 恢复有 init 完成标记的版本，供后续精确热更新断言。
+    await switchAndFetch(remoteBaseUrl, consumer, 'v1-restored');
+  });
+
+  test('客户端真实请求验证全局和接口代理执行位置', async () => {
     const { status, body } = await requestJson(
       consumer.baseUrl,
       '/v1/kefu/query-order-deposit'
@@ -126,25 +199,22 @@ describe('真实 jsonfb + 远程 preSandbox.js + Express 4 HTTP e2e', () => {
 
     assert.strictEqual(status, 200);
     assert.deepStrictEqual(body.trace, [
-      'preV1Risk:v1',
-      'kefuQueryOrderDepositRisk:v1',
+      'preV1Risk:v1-restored',
+      'kefuQueryOrderDepositRisk:v1-restored',
       'auth',
       'controller',
     ]);
   });
 
-  test('接口级代理不会错误注入其它接口', async () => {
+  test('接口代理不污染其它接口', async () => {
     const { body } = await requestJson(consumer.baseUrl, '/v1/kefu/untouched');
-    assert.deepStrictEqual(body.trace, ['preV1Risk:v1', 'untouched']);
+    assert.deepStrictEqual(body.trace, ['preV1Risk:v1-restored', 'untouched']);
   });
 
-  test('远程代码热更新后，新请求执行新版 handler 且 Layer 不重复', async () => {
-    await requestJson(remoteBaseUrl, '/__admin/revision/v2', { method: 'POST' });
-    const fetchResult = await requestJson(consumer.baseUrl, '/__sandbox/fetch', {
-      method: 'POST',
-    });
-    assert.strictEqual(fetchResult.status, 200);
-    assert.strictEqual(fetchResult.body.updated, true);
+  test('热更新替换真实 handler 引用，已有代理 Layer 不重复', async () => {
+    const fetched = await switchAndFetch(remoteBaseUrl, consumer, 'v2');
+    assert.strictEqual(fetched.handlerChanged.preV1Risk, true);
+    assert.strictEqual(fetched.handlerChanged.kefuQueryOrderDepositRisk, true);
 
     const request = await requestJson(consumer.baseUrl, '/v1/kefu/query-order-deposit');
     assert.deepStrictEqual(request.body.trace, [
@@ -159,30 +229,134 @@ describe('真实 jsonfb + 远程 preSandbox.js + Express 4 HTTP e2e', () => {
     assert.strictEqual(state.body.routeProxyCount, 1);
   });
 
-  test('连续多版本热更新仍只保留一个代理 Layer', async () => {
+  test('无效 Router、method、beforeMiddleware 均不创建代理 Layer', async () => {
+    await switchAndFetch(remoteBaseUrl, consumer, 'invalid-targets');
+
+    const state = await requestJson(consumer.baseUrl, '/__test/state');
+    assert.strictEqual(state.body.globalProxyCount, 1);
+    assert.strictEqual(state.body.routeProxyCount, 1);
+    assert.strictEqual(state.body.allRouteProxyCount, 1);
+    assert.strictEqual(state.body.totalProxyCount, 2);
+    assert.deepStrictEqual(state.body.allProxyNames, [
+      'preRiskMiddleware',
+      'preRiskRouteMiddleware:kefuQueryOrderDepositRisk',
+    ]);
+    assert.strictEqual(state.body.states.missingRouter.injected, false);
+    assert.strictEqual(state.body.states.missingMethod.injected, false);
+    assert.strictEqual(state.body.states.missingAnchor.injected, false);
+  });
+
+  test('beforeMiddleware 按名称把新代理插入 auth 前，且热更不重复', async () => {
+    await switchAndFetch(remoteBaseUrl, consumer, 'before-auth');
+    const firstRequest = await requestJson(consumer.baseUrl, '/v1/kefu/query-order-deposit');
+    assert.deepStrictEqual(firstRequest.body.trace, [
+      'preV1Risk:before-auth',
+      'kefuQueryOrderDepositRisk:before-auth',
+      'beforeAuthRisk:before-auth',
+      'auth',
+      'controller',
+    ]);
+
+    const fetched = await switchAndFetch(remoteBaseUrl, consumer, 'before-auth-2');
+    assert.strictEqual(fetched.handlerChanged.beforeAuthRisk, true);
+
+    const secondRequest = await requestJson(consumer.baseUrl, '/v1/kefu/query-order-deposit');
+    assert.deepStrictEqual(secondRequest.body.trace, [
+      'preV1Risk:before-auth-2',
+      'kefuQueryOrderDepositRisk:before-auth-2',
+      'beforeAuthRisk:before-auth-2',
+      'auth',
+      'controller',
+    ]);
+
+    const state = await requestJson(consumer.baseUrl, '/__test/state');
+    assert.strictEqual(state.body.states.beforeAuthRisk.injected, true);
+    assert.strictEqual(state.body.allRouteProxyCount, 2);
+    assert.deepStrictEqual(state.body.routeStack, [
+      'preRiskRouteMiddleware:kefuQueryOrderDepositRisk',
+      'preRiskRouteMiddleware:beforeAuthRisk',
+      'auth',
+      '<anonymous>',
+    ]);
+  });
+
+  test('index=1 按当前 route.stack 的绝对索引插入', async () => {
+    await switchAndFetch(remoteBaseUrl, consumer, 'index-one');
+
+    const request = await requestJson(consumer.baseUrl, '/v1/kefu/query-order-deposit');
+    assert.deepStrictEqual(request.body.trace, [
+      'preV1Risk:index-one',
+      'kefuQueryOrderDepositRisk:index-one',
+      'indexOneRisk:index-one',
+      'beforeAuthRisk:before-auth-2',
+      'auth',
+      'controller',
+    ]);
+
+    const state = await requestJson(consumer.baseUrl, '/__test/state');
+    assert.strictEqual(state.body.states.indexOneRisk.injected, true);
+    assert.strictEqual(state.body.allRouteProxyCount, 3);
+  });
+
+  test('beforeMiddleware 支持按函数引用插入 auth 前', async () => {
+    await switchAndFetch(remoteBaseUrl, consumer, 'before-auth-function');
+
+    const request = await requestJson(consumer.baseUrl, '/v1/kefu/query-order-deposit');
+    assert.deepStrictEqual(request.body.trace, [
+      'preV1Risk:before-auth-function',
+      'kefuQueryOrderDepositRisk:before-auth-function',
+      'indexOneRisk:index-one',
+      'beforeAuthRisk:before-auth-function',
+      'beforeAuthFunctionRisk:before-auth-function',
+      'auth',
+      'controller',
+    ]);
+
+    const state = await requestJson(consumer.baseUrl, '/__test/state');
+    assert.strictEqual(state.body.states.beforeAuthFunctionRisk.injected, true);
+    assert.strictEqual(state.body.allRouteProxyCount, 4);
+  });
+
+  test('连续多版本热更新后代理数量稳定，消费端无未捕获异常', async () => {
     for (const revision of ['v3', 'v4', 'v5']) {
       // eslint-disable-next-line no-await-in-loop
-      await requestJson(remoteBaseUrl, `/__admin/revision/${revision}`, { method: 'POST' });
-      // eslint-disable-next-line no-await-in-loop
-      const fetched = await requestJson(consumer.baseUrl, '/__sandbox/fetch', { method: 'POST' });
-      assert.strictEqual(fetched.body.updated, true);
+      const fetched = await switchAndFetch(remoteBaseUrl, consumer, revision);
+      assert.strictEqual(fetched.handlerChanged.preV1Risk, true);
+      assert.strictEqual(fetched.handlerChanged.kefuQueryOrderDepositRisk, true);
     }
 
     const request = await requestJson(consumer.baseUrl, '/v1/kefu/query-order-deposit');
     assert.deepStrictEqual(request.body.trace, [
       'preV1Risk:v5',
       'kefuQueryOrderDepositRisk:v5',
+      'indexOneRisk:index-one',
+      'beforeAuthRisk:before-auth-function',
+      'beforeAuthFunctionRisk:before-auth-function',
       'auth',
       'controller',
     ]);
 
     const state = await requestJson(consumer.baseUrl, '/__test/state');
+    const health = await requestJson(consumer.baseUrl, '/__sandbox/health');
     assert.strictEqual(state.body.globalProxyCount, 1);
     assert.strictEqual(state.body.routeProxyCount, 1);
-    assert.deepStrictEqual(state.body.routeStack, [
-      'preRiskRouteMiddleware:kefuQueryOrderDepositRisk',
-      'auth',
-      '<anonymous>',
-    ]);
+    assert.strictEqual(state.body.allRouteProxyCount, 4);
+    assert.strictEqual(health.status, 200);
+
+    const output = consumer.output();
+    assert.doesNotMatch(output.stderr, /uncaught|unhandled|TypeError|ReferenceError/i);
+
+    await waitFor(async () => {
+      const current = await requestJson(remoteBaseUrl, '/__admin/state');
+      return current.body.logs.length > 0;
+    }, 'remoteLog 到达远程服务');
+    const remoteState = await requestJson(remoteBaseUrl, '/__admin/state');
+    assert.ok(remoteState.body.logs.length > 0);
+    assert.ok(remoteState.body.logs.every((entry) => entry.signOk === true));
+    assert.ok(
+      remoteState.body.logs.every(
+        (entry) => !/preSandbox init failed|execution failed|layer not found/i.test(entry.message)
+      )
+    );
   });
 });

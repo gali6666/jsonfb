@@ -14,14 +14,17 @@ bash .cursor/skills/verify-pre-sandbox-code/scripts/verify.sh
 脚本依次执行：
 
 1. 校验 `publish/code/preSandbox.js` 语法和测试工程结构。
-2. 构建 jsonfb 单文件，经 yalc 发布并安装到独立消费端，同时安装 Express 4。
+2. 使用 `npm run build` 构建生产混淆单文件，经 yalc 发布并安装到独立消费端，同时安装 Express 4。
 3. 启动本地远程代码服务和真实 `require('jsonfb')` 的 Express 4 消费端。
-4. 由 jsonfb 自动拉取并执行远程 `preSandbox.js`，再运行 `node:test` 通过真实 HTTP 请求断言：
+4. 使用生产 `publish/convertRiskCode.js` 对远程 `preSandbox.js` 执行混淆和 Base64，再由 jsonfb 自动拉取、解码并执行，最后运行 `node:test` 通过真实 HTTP 请求断言：
    - `/v1` 前置代理真实执行；
    - 指定接口代理在 `auth` 前执行；
    - 未配置接口不被错误注入；
    - 重复 `init()` 不重复插入 Layer；
    - 热更新只替换全局 handler，新请求执行新版本；
+   - 无效 Router、method、beforeMiddleware 不产生错误 Layer；
+   - `beforeMiddleware` 和 `index` 两种插入方式位置正确；
+   - `beforeMiddleware` 的名称和函数引用两种定位方式都正确；
    - 服务无未捕获异常并干净退出。
 
 任何一步失败都必须返回非零退出码。验证 `lib/sandbox/**` 时继续使用：
