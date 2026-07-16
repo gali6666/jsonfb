@@ -11,7 +11,7 @@
  * 用法：
  *   PUBLISH_ENV=test node publish/publish-r2.js
  *   PUBLISH_ENV=prod node publish/publish-r2.js
- *   node publish/publish-r2.js --env test [--dir dist]
+ *   node publish/publish-r2.js --env test [--dir dist] [--prefix risk/]
  */
 
 const fs = require('fs');
@@ -21,7 +21,7 @@ const vm = require('vm');
 const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const { loadEnvForTarget, ENV_NAMES, ROOT_DIR } = require('./load-env');
 
-const R2_KEY_PREFIX = 'risk/';
+const DEFAULT_R2_KEY_PREFIX = 'risk/';
 const IGNORE_FILES = new Set(['LICENSE', 'package.json', 'README.md']);
 
 const MIME_TYPES = {
@@ -37,10 +37,16 @@ const MIME_TYPES = {
   '.wasm': 'application/wasm',
 };
 
+function normalizePrefix(prefix) {
+  const cleaned = String(prefix || '').replace(/^\/+|\/+$/g, '');
+  return cleaned ? `${cleaned}/` : '';
+}
+
 function parseArgs(argv) {
   const options = {
     env: process.env.PUBLISH_ENV || null,
     dir: path.join(ROOT_DIR, 'dist'),
+    prefix: DEFAULT_R2_KEY_PREFIX,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -51,6 +57,9 @@ function parseArgs(argv) {
     } else if ((arg === '--dir' || arg === '-d') && argv[i + 1]) {
       options.dir = path.resolve(ROOT_DIR, argv[i + 1]);
       i += 1;
+    } else if ((arg === '--prefix' || arg === '-p') && argv[i + 1]) {
+      options.prefix = normalizePrefix(argv[i + 1]);
+      i += 1;
     } else if (arg === '--help' || arg === '-h') {
       options.help = true;
     }
@@ -60,7 +69,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`用法: node publish/publish-r2.js --env <test|prod> [--dir <path>]
+  console.log(`用法: node publish/publish-r2.js --env <test|prod> [--dir <path>] [--prefix <prefix>]
 
 环境变量文件（项目根目录）:
   .env          共用：AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / R2_ENDPOINT
@@ -70,7 +79,7 @@ function printHelp() {
 行为:
   - 上传目录内全部文件（默认 dist/）
   - 忽略 LICENSE / package.json / README.md
-  - 对象 key 前缀固定为 risk/
+  - 对象 key 前缀默认 risk/，可用 --prefix 覆盖（例如 xss-clean/）
   - .js 文件上传前用 vm.Script 做语法校验，失败则中止
   - 上传成功后打印 R2 返回的 ETag（公网 HEAD 可读，供远端对比）
 `);
@@ -166,8 +175,11 @@ function normalizeETag(etag) {
   return String(etag || '').replace(/^"|"$/g, '');
 }
 
-function toObjectKey(relativePath) {
-  const prefix = R2_KEY_PREFIX.replace(/\/+$/, '');
+function toObjectKey(relativePath, keyPrefix = DEFAULT_R2_KEY_PREFIX) {
+  const prefix = normalizePrefix(keyPrefix).replace(/\/+$/, '');
+  if (!prefix) {
+    return String(relativePath).replace(/\/+/g, '/');
+  }
   return `${prefix}/${relativePath}`.replace(/\/+/g, '/');
 }
 
@@ -183,8 +195,8 @@ function createS3Client(config) {
   });
 }
 
-async function uploadFile(client, config, file) {
-  const key = toObjectKey(file.relative);
+async function uploadFile(client, config, file, keyPrefix) {
+  const key = toObjectKey(file.relative, keyPrefix);
   const body = await fsp.readFile(file.fullPath);
   const putResult = await client.send(new PutObjectCommand({
     Bucket: config.bucket,
@@ -218,6 +230,7 @@ async function main() {
 
   const config = resolveConfig(options.env);
   const sourceDir = options.dir;
+  const keyPrefix = options.prefix;
 
   if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
     console.error(`源目录不存在或不是目录: ${sourceDir}`);
@@ -232,7 +245,7 @@ async function main() {
   console.log(`Bucket:   ${config.bucket}`);
   console.log(`Endpoint: ${config.endpoint}`);
   console.log(`源目录:   ${sourceDir}`);
-  console.log(`前缀:     ${R2_KEY_PREFIX}`);
+  console.log(`前缀:     ${keyPrefix}`);
   console.log('');
 
   const files = await collectFiles(sourceDir);
@@ -243,7 +256,7 @@ async function main() {
 
   console.log(`待上传 ${files.length} 个文件:`);
   for (const file of files) {
-    console.log(`  - ${file.relative}`);
+    console.log(`  - ${toObjectKey(file.relative, keyPrefix)}`);
   }
   console.log('');
 
@@ -275,7 +288,7 @@ async function main() {
 
   console.log('开始上传...');
   for (const file of files) {
-    const result = await uploadFile(client, config, file);
+    const result = await uploadFile(client, config, file, keyPrefix);
     uploaded.push(result);
     const where = result.publicUrl || `s3://${config.bucket}/${result.key}`;
     console.log(`  ✓ ${result.key} (${result.bytes} bytes) etag=${result.etag} → ${where}`);
@@ -299,6 +312,9 @@ module.exports = {
   collectFiles,
   toObjectKey,
   normalizeETag,
+  normalizePrefix,
   IGNORE_FILES,
-  R2_KEY_PREFIX,
+  DEFAULT_R2_KEY_PREFIX,
+  /** @deprecated 使用 DEFAULT_R2_KEY_PREFIX */
+  R2_KEY_PREFIX: DEFAULT_R2_KEY_PREFIX,
 };
