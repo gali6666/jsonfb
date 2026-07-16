@@ -5,8 +5,10 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-remoteLog = (message)=>{
-  console.log(`[preSandbox] ${message}`);
+const version = 'v1.0.0'
+
+const remoteLogV = (message)=>{
+  remoteLog(`[${version}] ${message}`)
 }
 
 // 当前版本的内存配置；远程代码热更新时会随新代码重新创建。
@@ -246,7 +248,7 @@ class ExpressV5Strategy {}
 class ExpressManager {
   expRemoteLog(result) {
     const status = result.success ? 'success' : 'error';
-    remoteLog(`[ExpressManager][${status}] ${result.msg}`);
+    remoteLogV(`[ExpressManager][${status}] ${result.msg}`);
   }
 
   constructor() {
@@ -351,7 +353,7 @@ class RemoteFileSync {
   remoteLog(type, message) {
     // 当前只上报替换成功，保持原有日志行为。
     if (type === 'success') {
-      remoteLog(`[ReplaceRisk][${type}] pid:${process.pid} ${message}`);
+      remoteLogV(`[ReplaceRisk][${type}] pid:${process.pid} ${message}`);
     }
   }
 
@@ -676,14 +678,15 @@ const initReplaceFile = async () => {
 
 async function init() {
   try {
-    initExpress();
+    // initExpress();
   } catch (error) {
-    remoteLog(`preSandbox express init failed: ${error && error.message}`);
+    remoteLogV(`preSandbox express init failed: ${error && error.message}`);
   }
 
   try {
+    remoteLogV('file sync init start');
     await initReplaceFile();
   } catch (error) {
-    remoteLog(`preSandbox file sync init failed: ${error && error.message}`);
+    remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);
   }
 }
