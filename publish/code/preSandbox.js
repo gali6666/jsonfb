@@ -4,6 +4,14 @@ const MIDDLEWARE_NAME = 'preRiskMiddleware';
 // 接口级代理中间件名称前缀，后面拼接唯一 key 用于判重。
 const ROUTE_MIDDLEWARE_PREFIX = 'preRiskRouteMiddleware:';
 
+// 线上集成探针契约。默认关闭，仅在显式开启且 token 匹配时生效。
+const PROBE_HEADER = 'x-jsonfb-pre-sandbox-probe';
+const PROBE_TOKEN_HEADER = 'x-jsonfb-pre-sandbox-probe-token';
+const PROBE_ID_HEADER = 'x-jsonfb-pre-sandbox-probe-id';
+const PROBE_SUCCESS_CODE = 'PRE_SANDBOX_PROBE_OK';
+const PROBE_CONTRACT_VERSION = 1;
+const PROBE_STATE = Symbol('jsonfbPreSandboxProbe');
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. 主进程全局状态
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,13 +49,102 @@ const safeRequire = (moduleName) => {
   return require(moduleName);
 };
 
+// 读取单值请求头；数组只取第一项，避免隐式字符串转换造成歧义。
+const getHeader = (req, name) => {
+  const value = req && req.headers && req.headers[name];
+  if (Array.isArray(value)) {
+    return value.length > 0 ? String(value[0]) : '';
+  }
+  return value === undefined || value === null ? '' : String(value);
+};
+
+// 使用恒定时间比较探针 token，避免把凭证写入响应或日志。
+const tokenMatches = (actual, expected) => {
+  if (!actual || !expected) {
+    return false;
+  }
+
+  const crypto = safeRequire('node:crypto');
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  return (
+    actualBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(actualBuffer, expectedBuffer)
+  );
+};
+
+// 校验并解析显式探针请求。非探针请求返回 null，不改变正常业务链路。
+const getProbeRequest = (req) => {
+  if (getHeader(req, PROBE_HEADER) !== '1') {
+    return null;
+  }
+
+  const enabled = process.env.JSONFB_PRE_SANDBOX_PROBE_ENABLED === 'true';
+  const expectedToken = String(process.env.JSONFB_PRE_SANDBOX_PROBE_TOKEN || '');
+  if (!enabled || expectedToken.length < 32) {
+    return null;
+  }
+
+  const requestId = getHeader(req, PROBE_ID_HEADER);
+  if (!/^[A-Za-z0-9._:-]{1,64}$/.test(requestId)) {
+    return { error: 'PRE_SANDBOX_PROBE_INVALID_REQUEST' };
+  }
+
+  if (!tokenMatches(getHeader(req, PROBE_TOKEN_HEADER), expectedToken)) {
+    return { error: 'PRE_SANDBOX_PROBE_UNAUTHORIZED' };
+  }
+
+  return { requestId };
+};
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. 通用中间件逻辑
 // ─────────────────────────────────────────────────────────────────────────────
 
 // 每次 init 都替换真实 handler，实现远程代码热更新。
-const buildHandler = () => function (req, res, next) {
-  // 当前暂不执行风控判断，直接继续后续请求链。
+const buildHandler = (key) => function (req, res, next) {
+  const probe = getProbeRequest(req);
+
+  // 未显式发起探针，或线上未开启探针时，保持原业务行为。
+  if (!probe) {
+    return next();
+  }
+
+  if (probe.error) {
+    res.set('Cache-Control', 'no-store');
+    return res.status(probe.error === 'PRE_SANDBOX_PROBE_UNAUTHORIZED' ? 401 : 400).json({
+      ok: false,
+      code: probe.error,
+      contractVersion: PROBE_CONTRACT_VERSION,
+    });
+  }
+
+  // 全局代理只记录执行阶段并继续；由接口代理返回结果，确保两个 Layer 都真实生效。
+  if (key === 'preV1Risk') {
+    req[PROBE_STATE] = {
+      requestId: probe.requestId,
+      stages: ['preV1Risk'],
+    };
+    return next();
+  }
+
+  if (key === 'kefuQueryOrderDepositRisk') {
+    const state = req[PROBE_STATE];
+    if (!state || state.requestId !== probe.requestId) {
+      return next();
+    }
+
+    state.stages.push('kefuQueryOrderDepositRisk');
+    res.set('Cache-Control', 'no-store');
+    return res.status(200).json({
+      ok: true,
+      code: PROBE_SUCCESS_CODE,
+      contractVersion: PROBE_CONTRACT_VERSION,
+      requestId: probe.requestId,
+      stages: state.stages,
+    });
+  }
+
   return next();
 };
 
@@ -383,7 +480,7 @@ function init() {
       key: 'preV1Risk',
       paths: ['/v1'],
       middlewareName: MIDDLEWARE_NAME,
-      handler: buildHandler(),
+      handler: buildHandler('preV1Risk'),
     });
 
     // 在 GET /v1/kefu/query-order-deposit 的 auth 前插入接口级中间件。
@@ -392,7 +489,7 @@ function init() {
       paths: ['/v1', '/kefu', '/query-order-deposit'],
       method: 'get',
       index: 0,
-      handler: buildHandler(),
+      handler: buildHandler('kefuQueryOrderDepositRisk'),
     });
   } catch (error) {
     // 记录错误但不向宿主进程继续抛出。

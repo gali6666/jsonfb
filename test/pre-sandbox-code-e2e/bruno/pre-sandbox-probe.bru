@@ -1,0 +1,40 @@
+meta {
+  name: preSandbox HTTP probe
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/v1/kefu/query-order-deposit?__jsonfb_probe={{probeId}}
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  Cache-Control: no-cache
+  x-jsonfb-pre-sandbox-probe: 1
+  x-jsonfb-pre-sandbox-probe-token: {{probeToken}}
+  x-jsonfb-pre-sandbox-probe-id: {{probeId}}
+}
+
+script:pre-request {
+  bru.setVar('probeId', `bru-${Date.now()}`);
+}
+
+assert {
+  res.status: eq 200
+  res.body.ok: eq true
+  res.body.code: eq PRE_SANDBOX_PROBE_OK
+  res.body.contractVersion: eq 1
+  res.body.requestId: eq {{probeId}}
+}
+
+tests {
+  test('两个 preSandbox 代理按顺序执行', function () {
+    expect(res.getBody().stages).to.deep.equal([
+      'preV1Risk',
+      'kefuQueryOrderDepositRisk'
+    ]);
+  });
+}

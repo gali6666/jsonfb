@@ -4,7 +4,8 @@
   "private": true,
   "description": "publish/code/preSandbox.js 的 Express 4 本地黑盒端到端测试",
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "probe": "node http-probe.js"
   },
   "license": "MIT",
   "dependencies": {

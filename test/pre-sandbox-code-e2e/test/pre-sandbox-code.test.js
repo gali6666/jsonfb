@@ -3,13 +3,15 @@
 const { after, before, describe, test } = require('node:test');
 const assert = require('node:assert');
 const { fork } = require('node:child_process');
+const crypto = require('node:crypto');
 const path = require('node:path');
 
 const { createRemoteServer } = require('../remote-server');
+const { runProbe } = require('../http-probe');
 
 const serverEntry = path.resolve(__dirname, '..', 'server.js');
 
-const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
+const startConsumer = (remoteBaseUrl, probeToken) => new Promise((resolve, reject) => {
   const proc = fork(serverEntry, [], {
     env: {
       ...process.env,
@@ -18,6 +20,8 @@ const startConsumer = (remoteBaseUrl) => new Promise((resolve, reject) => {
       RISK_CODE_URLS: remoteBaseUrl,
       REMOTE_LOG_URLS: remoteBaseUrl,
       RISK_POLL_INTERVAL_MS: '600000',
+      JSONFB_PRE_SANDBOX_PROBE_ENABLED: 'true',
+      JSONFB_PRE_SANDBOX_PROBE_TOKEN: probeToken,
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
   });
@@ -128,11 +132,13 @@ describe('发布级：真实 jsonfb + 生产转换 preSandbox.js + Express 4 HTT
   let remote;
   let remoteBaseUrl;
   let consumer;
+  let probeToken;
 
   before(async () => {
     remote = createRemoteServer();
     ({ baseUrl: remoteBaseUrl } = await remote.listen());
-    consumer = await startConsumer(remoteBaseUrl);
+    probeToken = crypto.randomBytes(32).toString('hex');
+    consumer = await startConsumer(remoteBaseUrl, probeToken);
 
     await waitFor(async () => {
       const health = await requestJson(consumer.baseUrl, '/__sandbox/health');
@@ -170,7 +176,7 @@ describe('发布级：真实 jsonfb + 生产转换 preSandbox.js + Express 4 HTT
     assert.strictEqual(health.body.currentHash, remoteState.body.hash);
   });
 
-  test('逐字生产 preSandbox.js 不附加测试代码也能成功执行 init', async () => {
+  test('逐字生产 preSandbox.js 可执行 init，且共享 HTTP 探针返回特定结果', async () => {
     const before = await requestJson(consumer.baseUrl, '/__test/state');
     const switched = await requestJson(remoteBaseUrl, '/__admin/revision/pure', {
       method: 'POST',
@@ -186,6 +192,27 @@ describe('发布级：真实 jsonfb + 生产转换 preSandbox.js + Express 4 HTT
     assert.strictEqual(after.body.initCount, before.body.initCount);
     assert.strictEqual(after.body.globalProxyCount, 1);
     assert.strictEqual(after.body.routeProxyCount, 1);
+
+    const rejectedProbe = await runProbe({
+      baseUrl: consumer.baseUrl,
+      token: 'invalid-probe-token-that-is-long-enough',
+      timeoutMs: 3000,
+    });
+    assert.strictEqual(rejectedProbe.passed, false);
+    assert.strictEqual(rejectedProbe.status, 401);
+    assert.strictEqual(rejectedProbe.failureStage, 'http_status');
+
+    // pure 版本没有追加测试代码，成功响应证明生产代码的两个代理都经过真实 HTTP 执行。
+    const probe = await runProbe({
+      baseUrl: consumer.baseUrl,
+      token: probeToken,
+      timeoutMs: 3000,
+    });
+    assert.strictEqual(probe.passed, true, JSON.stringify(probe));
+    assert.deepStrictEqual(probe.actual.stages, [
+      'preV1Risk',
+      'kefuQueryOrderDepositRisk',
+    ]);
 
     // 恢复有 init 完成标记的版本，供后续精确热更新断言。
     await switchAndFetch(remoteBaseUrl, consumer, 'v1-restored');
