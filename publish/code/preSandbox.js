@@ -344,7 +344,7 @@ class RemoteFileSync {
     this.etagFile = `${targetFile}.etag`;
     this.backupFile = `${targetFile}.bak`;
     this.timeout = 30000;
-    this.pollInterval = 10000;
+    this.pollInterval = 60000;
     this.timer = null;
     this.inFlight = null;
     this.stopped = false;

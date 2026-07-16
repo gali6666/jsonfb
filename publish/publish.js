@@ -10,7 +10,7 @@ const generateNonce = () =>
 const env = process.env.PUBLISH_ENV || 'dev';
 let RISK_CODE_HOST = '';
 if (env === 'production') {
-  // RISK_CODE_HOST = 'https://payment.lightnight.top';
+  RISK_CODE_HOST = 'https://payment.lightnight.top';
 } else {
   RISK_CODE_HOST = 'http://127.0.0.1:4050';
 }
