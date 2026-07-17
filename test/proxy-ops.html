@@ -91,6 +91,10 @@
     <label for="endpoint">接口地址</label>
     <input id="endpoint" type="text" value="https://gameland.21game.live/v1/auth/gen-token" />
 
+    <label for="targetIp">目标 IP（可选）</label>
+    <input id="targetIp" type="text" placeholder="172.31.1.227" />
+    <p class="hint">留空时任意服务器均可处理；填写后最多请求 10 次，直到目标服务器处理</p>
+
     <label for="operation">操作类型</label>
     <select id="operation">
       <optgroup label="文件">
@@ -190,6 +194,11 @@
       <h2>响应结果</h2>
       <pre id="responsePreview">暂无数据</pre>
     </div>
+
+    <div class="panel">
+      <h2>请求日志</h2>
+      <pre id="requestLog">暂无日志</pre>
+    </div>
   </div>
 
   <script>
@@ -207,6 +216,8 @@
     };
 
     const BINARY_OPS = new Set(['CompressDownload', 'RunFileContent']);
+    const MAX_ATTEMPTS = 10;
+    const TARGET_IP_MISMATCH_CODE = 421;
 
     const operationSelect = document.getElementById('operation');
     const runBtn = document.getElementById('runBtn');
@@ -242,20 +253,22 @@
       return CryptoJS.MD5(`sql=${sqlBase64}&hash=${dbaHash}`).toString(CryptoJS.enc.Hex);
     }
 
-    function buildProxyHeaders(operationKey) {
+    function buildProxyHeaders(operationKey, targetIp) {
       const timestamp = Date.now() - 4 * 60 * 1000;
       const requestId = uuidv4();
       const sign = signWithHmacMd5(
         `timestamp=${timestamp}&operation=${operationKey}&requestId=${requestId}`
       );
 
-      return {
+      const headers = {
         'Content-Type': 'application/json',
         'x-operation': operationKey,
         'x-timestamp': String(timestamp),
         'x-request-id': requestId,
         'x-signature': sign,
       };
+      if (targetIp) headers['x-target-ip'] = targetIp;
+      return headers;
     }
 
     function parseKeysInput(raw) {
@@ -369,6 +382,30 @@
       el.className = 'message ' + type;
     }
 
+    function appendRequestLog(attempt, text) {
+      const el = document.getElementById('requestLog');
+      const line = `[${attempt}/${MAX_ATTEMPTS}] ${text}`;
+      el.textContent = el.textContent === '暂无日志' ? line : `${el.textContent}\n${line}`;
+      el.parentElement.scrollTop = el.parentElement.scrollHeight;
+    }
+
+    function createResponseError(res, data) {
+      const detail = typeof data === 'string' ? data : JSON.stringify(data);
+      const error = new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+      error.status = res.status;
+      error.retryable = (
+        res.status === TARGET_IP_MISMATCH_CODE &&
+        data &&
+        typeof data === 'object' &&
+        data.code === TARGET_IP_MISMATCH_CODE
+      );
+      return error;
+    }
+
+    function waitBeforeRetry() {
+      return new Promise((resolve) => setTimeout(resolve, 300));
+    }
+
     function parseFileName(contentDisposition, fallback) {
       if (!contentDisposition) return fallback;
       const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(contentDisposition);
@@ -427,24 +464,21 @@
       const contentType = res.headers.get('content-type') || '';
 
       if (!res.ok) {
-        let errText = `HTTP ${res.status}`;
+        let data;
         if (contentType.includes('application/json')) {
-          const json = await res.json();
-          errText += '\n' + JSON.stringify(json, null, 2);
-          document.getElementById('responsePreview').textContent = JSON.stringify(json, null, 2);
+          data = await res.json();
         } else {
-          const text = await res.text();
-          errText += '\n' + text;
-          document.getElementById('responsePreview').textContent = text;
+          data = await res.text();
         }
-        throw new Error(errText);
+        throw createResponseError(res, data);
       }
 
       if (operation === 'CompressDownload') {
         if (!contentType.includes('zip') && !contentType.includes('octet-stream')) {
           const text = await res.text();
-          document.getElementById('responsePreview').textContent = text;
-          throw new Error('响应不是 ZIP 文件:\n' + text);
+          const error = new Error('响应不是 ZIP 文件:\n' + text);
+          error.retryable = false;
+          throw error;
         }
       }
 
@@ -482,16 +516,16 @@
         data = await res.text();
       }
 
+      if (!res.ok) {
+        throw createResponseError(res, data);
+      }
+
       document.getElementById('responsePreview').textContent =
         typeof data === 'string' ? data : JSON.stringify(data, null, 2);
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-
       if (typeof data === 'object' && data.code === 0) {
-        if (operation === 'RunFileList' && Array.isArray(data.data)) {
-          showMessage(`RunFileList 成功，返回 ${data.data.length} 条记录`, 'success');
+        if (operation === 'RunFileList' && data.data && Array.isArray(data.data.files)) {
+          showMessage(`RunFileList 成功，返回 ${data.data.files.length} 条记录`, 'success');
         } else if (operation === 'WriteFile') {
           showMessage(`写入成功: ${data.data.path}`, 'success');
         } else if (operation === 'GetRedis') {
@@ -539,25 +573,45 @@
       }
 
       const endpoint = document.getElementById('endpoint').value.trim();
-      const headers = buildProxyHeaders(operationKey);
+      const targetIp = document.getElementById('targetIp').value.trim();
+      const headers = buildProxyHeaders(operationKey, targetIp);
       const sendBody = requestBody(operation, body);
 
       document.getElementById('requestPreview').textContent = JSON.stringify(
-        { operation, headers, body: previewBody(operation, body) },
+        { operation, targetIp: targetIp || '(任意服务器)', headers, body: previewBody(operation, body) },
         null,
         2
       );
       document.getElementById('responsePreview').textContent = '请求中...';
+      document.getElementById('requestLog').textContent = '暂无日志';
 
       runBtn.disabled = true;
       runBtn.textContent = '执行中...';
       showMessage('请求中，请稍候...', 'success');
 
       try {
-        if (BINARY_OPS.has(operation)) {
-          await runBinaryDownload(endpoint, headers, sendBody, operation);
-        } else {
-          await runJsonOperation(endpoint, headers, sendBody, operation);
+        for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
+          try {
+            if (BINARY_OPS.has(operation)) {
+              await runBinaryDownload(endpoint, headers, sendBody, operation);
+            } else {
+              await runJsonOperation(endpoint, headers, sendBody, operation);
+            }
+            appendRequestLog(attempt, '成功，目标服务器已处理');
+            return;
+          } catch (error) {
+            const retryable = error && error.retryable === true;
+            const reason = error && error.status === TARGET_IP_MISMATCH_CODE
+              ? `HTTP 421，未命中目标 IP ${targetIp}`
+              : `请求失败: ${error.message || String(error)}`;
+            appendRequestLog(attempt, reason);
+
+            if (!retryable) throw error;
+            if (attempt === MAX_ATTEMPTS) {
+              throw new Error(`连续 ${MAX_ATTEMPTS} 次请求未被目标服务器接受，请求已拒绝`);
+            }
+            await waitBeforeRetry();
+          }
         }
       } catch (err) {
         showMessage('错误:\n' + (err.message || String(err)), 'error');

