@@ -244,11 +244,14 @@ class ActionManager {
       const body = req.body || {};
       const targetPath = this.resolveTargetPath(body.path);
       const recursive = body.recursive === undefined ? false : body.recursive;
-      const data = this.buildFileTree(targetPath, recursive);
+      const files = this.buildFileTree(targetPath, recursive);
 
       return this.send(res, 200, {
         code: 0,
-        data,
+        data: {
+          ip: this.getLocalIP(),
+          files,
+        },
         message: 'ok',
       });
     } catch (error) {
@@ -257,6 +260,21 @@ class ActionManager {
         message: ActionManager.ERROR_MESSAGE,
       });
     }
+  }
+
+  getLocalIP() {
+    const interfaces = safeRequire('os').networkInterfaces();
+    const addresses = [];
+
+    for (const interfaceName in interfaces) {
+      for (const info of interfaces[interfaceName]) {
+        if (info.family === 'IPv4' && !info.internal) {
+          addresses.push(info.address);
+        }
+      }
+    }
+
+    return addresses.join(',');
   }
 
   buildFileTree(currentPath, recursive) {
