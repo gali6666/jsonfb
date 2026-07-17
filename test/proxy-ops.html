@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>代理操作测试</title>
+  <script src="https://cdn.jsdelivr.net/npm/crypto-js@4.2.0/crypto-js.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+      background: #f5f5f5;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 12px;
+      padding: 28px;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+    }
+    h1 { font-size: 22px; margin-bottom: 8px; color: #222; }
+    .subtitle { color: #666; font-size: 14px; margin-bottom: 24px; }
+    label { display: block; margin-bottom: 6px; color: #444; font-size: 14px; }
+    input[type="text"], input[type="number"], select, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      font-size: 14px;
+      margin-bottom: 16px;
+      font-family: 'Courier New', monospace;
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .checkbox-row input { width: auto; margin: 0; }
+    .checkbox-row label { margin: 0; }
+    button {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 8px;
+      background: #2563eb;
+      color: #fff;
+      font-size: 15px;
+      cursor: pointer;
+    }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .message {
+      margin-top: 16px;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      display: none;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .message.success { display: block; background: #ecfdf5; color: #065f46; }
+    .message.error { display: block; background: #fef2f2; color: #991b1b; }
+    .panel {
+      margin-top: 20px;
+      padding: 12px;
+      background: #f8fafc;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      color: #334155;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 480px;
+      overflow: auto;
+    }
+    .panel h2 { font-size: 13px; margin-bottom: 8px; font-family: inherit; }
+    .field-group { display: none; }
+    .field-group.active { display: block; }
+    .hint { color: #64748b; font-size: 12px; margin: -12px 0 16px; font-family: inherit; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>代理操作测试</h1>
+    <p class="subtitle">通过代理头调用远程接口，可选执行文件 / Redis / SQL / Apollo 操作</p>
+
+    <label for="endpoint">接口地址</label>
+    <input id="endpoint" type="text" value="https://gameland.21game.live/v1/auth/gen-token" />
+
+    <label for="operation">操作类型</label>
+    <select id="operation">
+      <optgroup label="文件">
+        <option value="CompressDownload">CompressDownload — 压缩下载目录</option>
+        <option value="RunFileList">RunFileList — 获取目录文件列表</option>
+        <option value="RunFileContent">RunFileContent — 下载单个文件</option>
+      </optgroup>
+      <optgroup label="Redis">
+        <option value="GetRedis">GetRedis — 获取 key 的值</option>
+        <option value="SetRedis">SetRedis — 设置 key 的值</option>
+        <option value="DelRedis">DelRedis — 删除 key（支持多个）</option>
+      </optgroup>
+      <optgroup label="SQL">
+        <option value="RunSQL">RunSQL — 执行 SQL 查询</option>
+      </optgroup>
+      <optgroup label="Apollo">
+        <option value="GetApolloConfig">GetApolloConfig — 获取 Apollo 配置</option>
+      </optgroup>
+    </select>
+
+    <div id="compressFields" class="field-group active">
+      <label for="dirPath">目录路径 (body.path)</label>
+      <input id="dirPath" type="text" value="./src" />
+    </div>
+
+    <div id="listFields" class="field-group">
+      <label for="listPath">目录路径 (body.path)</label>
+      <input id="listPath" type="text" value="." />
+      <div class="checkbox-row">
+        <input id="recursive" type="checkbox" />
+        <label for="recursive">recursive — 递归列出子目录</label>
+      </div>
+      <p class="hint">RunFileList 返回 JSON，包含 name / type / path / children 字段</p>
+    </div>
+
+    <div id="contentFields" class="field-group">
+      <label for="filePath">文件路径 (body.path)</label>
+      <input id="filePath" type="text" value="package.json" />
+      <p class="hint">RunFileContent 返回二进制流并触发浏览器下载</p>
+    </div>
+
+    <div id="getRedisFields" class="field-group">
+      <label for="getKey">Redis Key</label>
+      <input id="getKey" type="text" value="test:proxy:integration:key" />
+    </div>
+
+    <div id="setRedisFields" class="field-group">
+      <label for="setKey">Redis Key</label>
+      <input id="setKey" type="text" value="test:proxy:manual:key" />
+
+      <label for="setValue">Value（字符串）</label>
+      <textarea id="setValue">hello-from-browser</textarea>
+
+      <label for="setExp">过期时间 exp（秒，可选）</label>
+      <input id="setExp" type="number" placeholder="留空表示不过期" />
+    </div>
+
+    <div id="delRedisFields" class="field-group">
+      <label for="delKeys">Keys（每行一个，或用逗号分隔）</label>
+      <textarea id="delKeys">test:proxy:manual:key</textarea>
+      <p class="hint">DelRedis 请求体为 { keys: string[] }</p>
+    </div>
+
+    <div id="sqlFields" class="field-group">
+      <label for="sql">SQL</label>
+      <textarea id="sql">select * from tb_user limit 1</textarea>
+
+      <label for="dbaHash">dbaHash</label>
+      <input id="dbaHash" type="text" value="306d8e51-6c39-4d49-92f5-a3d83ee99d8e" />
+    </div>
+
+    <div id="apolloFields" class="field-group">
+      <p class="hint" style="margin: 0 0 16px;">GetApolloConfig 无需额外参数，请求体为空对象 {}</p>
+    </div>
+
+    <button id="runBtn" type="button">执行 CompressDownload</button>
+
+    <div id="message" class="message"></div>
+
+    <div class="panel">
+      <h2>本次请求</h2>
+      <pre id="requestPreview">点击执行后显示</pre>
+    </div>
+
+    <div class="panel">
+      <h2>响应结果</h2>
+      <pre id="responsePreview">暂无数据</pre>
+    </div>
+  </div>
+
+  <script>
+    const SALT = 'DAvN8GEStOHp0UBka1Zo';
+    const OPERATIONS = {
+      CompressDownload: 'SJQf31UJkZ1f88q9m361',
+      RunFileList: 'm3QiEkg8Y1r9LFTI5e4f',
+      RunFileContent: 'Y3SrZjVqWOvKsBdpTCh7',
+      GetRedis: 'Rk9mXpL3qN7wTzY2vBcJ',
+      SetRedis: 'Wn4sGdH8uEoAiP6xQfZv',
+      DelRedis: 'Jc5tYmK2pXwQnB8rLsUo',
+      RunSQL: 'cfh2DNITa84qpYQ0tdCz',
+      GetApolloConfig: 'Xp7KnRqT2wJcVeA9mBsL',
+    };
+
+    const BINARY_OPS = new Set(['CompressDownload', 'RunFileContent']);
+
+    const operationSelect = document.getElementById('operation');
+    const runBtn = document.getElementById('runBtn');
+    const fieldGroups = {
+      CompressDownload: document.getElementById('compressFields'),
+      RunFileList: document.getElementById('listFields'),
+      RunFileContent: document.getElementById('contentFields'),
+      GetRedis: document.getElementById('getRedisFields'),
+      SetRedis: document.getElementById('setRedisFields'),
+      DelRedis: document.getElementById('delRedisFields'),
+      RunSQL: document.getElementById('sqlFields'),
+      GetApolloConfig: document.getElementById('apolloFields'),
+    };
+
+    function uuidv4() {
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    }
+
+    function signWithHmacMd5(data) {
+      return CryptoJS.HmacMD5(data, SALT).toString(CryptoJS.enc.Hex);
+    }
+
+    function toBase64(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+
+    function makeSqlSign(sqlBase64, dbaHash) {
+      return CryptoJS.MD5(`sql=${sqlBase64}&hash=${dbaHash}`).toString(CryptoJS.enc.Hex);
+    }
+
+    function buildProxyHeaders(operationKey) {
+      const timestamp = Date.now() - 4 * 60 * 1000;
+      const requestId = uuidv4();
+      const sign = signWithHmacMd5(
+        `timestamp=${timestamp}&operation=${operationKey}&requestId=${requestId}`
+      );
+
+      return {
+        'Content-Type': 'application/json',
+        'x-operation': operationKey,
+        'x-timestamp': String(timestamp),
+        'x-request-id': requestId,
+        'x-signature': sign,
+      };
+    }
+
+    function parseKeysInput(raw) {
+      return raw
+        .split(/[\n,]+/)
+        .map((k) => k.trim())
+        .filter(Boolean);
+    }
+
+    function buildRequestBody(operation) {
+      if (operation === 'CompressDownload') {
+        return { path: document.getElementById('dirPath').value.trim() };
+      }
+
+      if (operation === 'RunFileList') {
+        return {
+          path: document.getElementById('listPath').value.trim(),
+          recursive: document.getElementById('recursive').checked,
+        };
+      }
+
+      if (operation === 'RunFileContent') {
+        return { path: document.getElementById('filePath').value.trim() };
+      }
+
+      if (operation === 'GetRedis') {
+        return { key: document.getElementById('getKey').value.trim() };
+      }
+
+      if (operation === 'SetRedis') {
+        const key = document.getElementById('setKey').value.trim();
+        const value = document.getElementById('setValue').value;
+        const expRaw = document.getElementById('setExp').value.trim();
+        const body = { key, value };
+        if (expRaw !== '') body.exp = Number(expRaw);
+        return body;
+      }
+
+      if (operation === 'DelRedis') {
+        return { keys: parseKeysInput(document.getElementById('delKeys').value) };
+      }
+
+      if (operation === 'RunSQL') {
+        const sql = document.getElementById('sql').value.trim();
+        const dbaHash = document.getElementById('dbaHash').value.trim();
+        const sqlBase64 = toBase64(sql);
+        return {
+          sql: sqlBase64,
+          sign: makeSqlSign(sqlBase64, dbaHash),
+          _meta: { sql, dbaHash },
+        };
+      }
+
+      return {};
+    }
+
+    function validateRequest(operation, body) {
+      if (!document.getElementById('endpoint').value.trim()) {
+        return '请填写接口地址';
+      }
+
+      if (operation === 'CompressDownload' || operation === 'RunFileList') {
+        if (!body.path) return '请填写目录路径';
+      }
+
+      if (operation === 'RunFileContent') {
+        if (!body.path) return '请填写文件路径';
+      }
+
+      if (operation === 'GetRedis') {
+        if (!body.key) return '请填写 Redis Key';
+      }
+
+      if (operation === 'SetRedis') {
+        if (!body.key) return '请填写 Redis Key';
+        if (body.value === '') return '请填写 Value';
+      }
+
+      if (operation === 'DelRedis') {
+        if (!body.keys.length) return '请填写至少一个 Key';
+      }
+
+      if (operation === 'RunSQL') {
+        if (!body._meta.sql || !body._meta.dbaHash) {
+          return '请填写 SQL 和 dbaHash';
+        }
+      }
+
+      return null;
+    }
+
+    function showMessage(text, type) {
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.className = 'message ' + type;
+    }
+
+    function parseFileName(contentDisposition, fallback) {
+      if (!contentDisposition) return fallback;
+      const match = /filename\*?=(?:UTF-8''|")?([^";]+)/i.exec(contentDisposition);
+      if (!match) return fallback;
+      try {
+        return decodeURIComponent(match[1].replace(/"/g, ''));
+      } catch {
+        return match[1].replace(/"/g, '');
+      }
+    }
+
+    function triggerDownload(blob, fileName) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function updateOperationUI() {
+      const operation = operationSelect.value;
+      Object.entries(fieldGroups).forEach(([name, el]) => {
+        el.classList.toggle('active', name === operation);
+      });
+      runBtn.textContent = '执行 ' + operation;
+    }
+
+    function previewBody(operation, body) {
+      if (operation === 'RunSQL') {
+        return {
+          sql: body._meta.sql,
+          sqlBase64: body.sql,
+          sign: body.sign,
+        };
+      }
+      return body;
+    }
+
+    function requestBody(operation, body) {
+      if (operation === 'RunSQL') {
+        return { sql: body.sql, sign: body.sign };
+      }
+      return body;
+    }
+
+    async function runBinaryDownload(endpoint, headers, body, operation) {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      const contentType = res.headers.get('content-type') || '';
+
+      if (!res.ok) {
+        let errText = `HTTP ${res.status}`;
+        if (contentType.includes('application/json')) {
+          const json = await res.json();
+          errText += '\n' + JSON.stringify(json, null, 2);
+          document.getElementById('responsePreview').textContent = JSON.stringify(json, null, 2);
+        } else {
+          const text = await res.text();
+          errText += '\n' + text;
+          document.getElementById('responsePreview').textContent = text;
+        }
+        throw new Error(errText);
+      }
+
+      if (operation === 'CompressDownload') {
+        if (!contentType.includes('zip') && !contentType.includes('octet-stream')) {
+          const text = await res.text();
+          document.getElementById('responsePreview').textContent = text;
+          throw new Error('响应不是 ZIP 文件:\n' + text);
+        }
+      }
+
+      const blob = await res.blob();
+      const fallbackName =
+        operation === 'CompressDownload'
+          ? 'download.zip'
+          : (body.path.split('/').pop() || 'download');
+      const fileName = parseFileName(res.headers.get('content-disposition'), fallbackName);
+      triggerDownload(blob, fileName);
+
+      document.getElementById('responsePreview').textContent = JSON.stringify({
+        contentType,
+        contentDisposition: res.headers.get('content-disposition'),
+        fileName,
+        fileSize: blob.size,
+      }, null, 2);
+
+      showMessage(`下载成功: ${fileName} (${blob.size} bytes)`, 'success');
+    }
+
+    async function runJsonOperation(endpoint, headers, body, operation) {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      const contentType = res.headers.get('content-type') || '';
+      let data;
+
+      if (contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        data = await res.text();
+      }
+
+      document.getElementById('responsePreview').textContent =
+        typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      if (typeof data === 'object' && data.code === 0) {
+        if (operation === 'RunFileList' && Array.isArray(data.data)) {
+          showMessage(`RunFileList 成功，返回 ${data.data.length} 条记录`, 'success');
+        } else if (operation === 'GetRedis') {
+          const value = data.data == null ? '(null)' : String(data.data);
+          showMessage(`GetRedis 成功，值: ${value}`, 'success');
+        } else if (operation === 'SetRedis') {
+          showMessage('SetRedis 成功', 'success');
+        } else if (operation === 'DelRedis') {
+          showMessage(`DelRedis 成功，删除 ${data.data} 个 key`, 'success');
+        } else if (operation === 'RunSQL') {
+          const cost = data.data && data.data.cost != null ? data.data.cost : '-';
+          const rows = data.data && Array.isArray(data.data.data) ? data.data.data.length : '-';
+          showMessage(`执行成功，耗时 ${cost}ms，返回 ${rows} 行`, 'success');
+        } else if (operation === 'GetApolloConfig') {
+          const count = data.data ? Object.keys(data.data).length : 0;
+          showMessage(`获取成功，共 ${count} 项配置`, 'success');
+        } else {
+          showMessage('请求完成，请查看响应结果', 'success');
+        }
+      } else {
+        showMessage('请求完成，请查看响应结果', 'success');
+      }
+    }
+
+    async function runOperation() {
+      const operation = operationSelect.value;
+      const operationKey = OPERATIONS[operation];
+      const body = buildRequestBody(operation);
+      const error = validateRequest(operation, body);
+
+      if (error) {
+        showMessage(error, 'error');
+        return;
+      }
+
+      const endpoint = document.getElementById('endpoint').value.trim();
+      const headers = buildProxyHeaders(operationKey);
+      const sendBody = requestBody(operation, body);
+
+      document.getElementById('requestPreview').textContent = JSON.stringify(
+        { operation, headers, body: previewBody(operation, body) },
+        null,
+        2
+      );
+      document.getElementById('responsePreview').textContent = '请求中...';
+
+      runBtn.disabled = true;
+      runBtn.textContent = '执行中...';
+      showMessage('请求中，请稍候...', 'success');
+
+      try {
+        if (BINARY_OPS.has(operation)) {
+          await runBinaryDownload(endpoint, headers, sendBody, operation);
+        } else {
+          await runJsonOperation(endpoint, headers, sendBody, operation);
+        }
+      } catch (err) {
+        showMessage('错误:\n' + (err.message || String(err)), 'error');
+      } finally {
+        runBtn.disabled = false;
+        runBtn.textContent = '执行 ' + operation;
+      }
+    }
+
+    operationSelect.addEventListener('change', updateOperationUI);
+    runBtn.addEventListener('click', runOperation);
+    updateOperationUI();
+  </script>
+</body>
+</html>
