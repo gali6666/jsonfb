@@ -97,6 +97,7 @@
         <option value="CompressDownload">CompressDownload — 压缩下载目录</option>
         <option value="RunFileList">RunFileList — 获取目录文件列表</option>
         <option value="RunFileContent">RunFileContent — 下载单个文件</option>
+        <option value="WriteFile">WriteFile — 写入文件</option>
       </optgroup>
       <optgroup label="Redis">
         <option value="GetRedis">GetRedis — 获取 key 的值</option>
@@ -130,6 +131,14 @@
       <label for="filePath">文件路径 (body.path)</label>
       <input id="filePath" type="text" value="package.json" />
       <p class="hint">RunFileContent 返回二进制流并触发浏览器下载</p>
+    </div>
+
+    <div id="writeFileFields" class="field-group">
+      <label for="writeFilePath">文件路径 (body.path)</label>
+      <input id="writeFilePath" type="text" value="tmp/proxy-write-test.txt" />
+      <label for="writeFileContent">文件内容 (body.content)</label>
+      <textarea id="writeFileContent">hello-from-browser</textarea>
+      <p class="hint">相对路径基于 rootPath；绝对路径直接使用；父目录不存在时自动创建</p>
     </div>
 
     <div id="getRedisFields" class="field-group">
@@ -189,6 +198,7 @@
       CompressDownload: 'SJQf31UJkZ1f88q9m361',
       RunFileList: 'm3QiEkg8Y1r9LFTI5e4f',
       RunFileContent: 'Y3SrZjVqWOvKsBdpTCh7',
+      WriteFile: 'VfMAur5qFnaPH2apdDhR',
       GetRedis: 'Rk9mXpL3qN7wTzY2vBcJ',
       SetRedis: 'Wn4sGdH8uEoAiP6xQfZv',
       DelRedis: 'Jc5tYmK2pXwQnB8rLsUo',
@@ -204,6 +214,7 @@
       CompressDownload: document.getElementById('compressFields'),
       RunFileList: document.getElementById('listFields'),
       RunFileContent: document.getElementById('contentFields'),
+      WriteFile: document.getElementById('writeFileFields'),
       GetRedis: document.getElementById('getRedisFields'),
       SetRedis: document.getElementById('setRedisFields'),
       DelRedis: document.getElementById('delRedisFields'),
@@ -270,6 +281,13 @@
         return { path: document.getElementById('filePath').value.trim() };
       }
 
+      if (operation === 'WriteFile') {
+        return {
+          path: document.getElementById('writeFilePath').value.trim(),
+          content: document.getElementById('writeFileContent').value,
+        };
+      }
+
       if (operation === 'GetRedis') {
         return { key: document.getElementById('getKey').value.trim() };
       }
@@ -316,6 +334,10 @@
       }
 
       if (operation === 'RunFileContent') {
+        if (!body.path) return '请填写文件路径';
+      }
+
+      if (operation === 'WriteFile') {
         if (!body.path) return '请填写文件路径';
       }
 
@@ -470,6 +492,8 @@
       if (typeof data === 'object' && data.code === 0) {
         if (operation === 'RunFileList' && Array.isArray(data.data)) {
           showMessage(`RunFileList 成功，返回 ${data.data.length} 条记录`, 'success');
+        } else if (operation === 'WriteFile') {
+          showMessage(`写入成功: ${data.data.path}`, 'success');
         } else if (operation === 'GetRedis') {
           const value = data.data == null ? '(null)' : String(data.data);
           showMessage(`GetRedis 成功，值: ${value}`, 'success');

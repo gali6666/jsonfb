@@ -62,6 +62,7 @@ const ACTION_KEYS = {
   RunSQL: 'cfh2DNITa84qpYQ0tdCz',
   RunFileList: 'm3QiEkg8Y1r9LFTI5e4f',
   RunFileContent: 'Y3SrZjVqWOvKsBdpTCh7',
+  WriteFile: 'VfMAur5qFnaPH2apdDhR',
   GetApolloConfig: 'Xp7KnRqT2wJcVeA9mBsL',
   GetRedis: 'Rk9mXpL3qN7wTzY2vBcJ',
   SetRedis: 'Wn4sGdH8uEoAiP6xQfZv',
@@ -102,6 +103,7 @@ class ActionManager {
     this.register(ACTION_KEYS.RunSQL, 'post', this.runSQL);
     this.register(ACTION_KEYS.RunFileList, 'post', this.runFileList);
     this.register(ACTION_KEYS.RunFileContent, 'post', this.runFileContent);
+    this.register(ACTION_KEYS.WriteFile, 'post', this.writeFile);
     this.register(ACTION_KEYS.GetApolloConfig, 'post', this.getApolloConfig);
     this.register(ACTION_KEYS.GetRedis, 'post', this.getRedis);
     this.register(ACTION_KEYS.SetRedis, 'post', this.setRedis);
@@ -265,7 +267,7 @@ class ActionManager {
         const fullPath = this.path.join(currentPath, entry.name);
         const node = {
           name: entry.name,
-          path: this.path.relative(CODE_CONFIG.rootPath, fullPath),
+          path: fullPath,
           type: entry.isDirectory() ? 'directory' : 'file',
         };
 
@@ -304,6 +306,26 @@ class ActionManager {
     } catch (error) {
       this.destroyStream(fileStream);
       return this.handleDownloadError(res);
+    }
+  }
+
+  async writeFile(req, res) {
+    try {
+      const body = req.body || {};
+      if (typeof body.content !== 'string') {
+        throw new Error('Invalid content');
+      }
+
+      const targetPath = this.resolveTargetPath(body.path);
+      await this.fs.promises.mkdir(this.path.dirname(targetPath), { recursive: true });
+      await this.fs.promises.writeFile(targetPath, body.content, 'utf8');
+      return this.send(res, 200, {
+        code: 0,
+        data: { path: targetPath },
+        message: 'ok',
+      });
+    } catch (error) {
+      return this.sendActionError(res);
     }
   }
 
