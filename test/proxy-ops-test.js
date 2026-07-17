@@ -23,6 +23,25 @@ describe('proxy operation page', function () {
     assert.include(inlineScript, 'appendRequestLog(attempt');
   });
 
+  it('builds requests from a domain and a random v1 POST route', function () {
+    assert.include(html, 'id="domain"');
+    assert.notInclude(html, 'id="endpoint"');
+    assert.include(inlineScript, 'const baseUrl =');
+    assert.include(
+      inlineScript,
+      'POST_ROUTES[Math.floor(Math.random() * POST_ROUTES.length)]'
+    );
+
+    var routesSource = inlineScript.match(/const POST_ROUTES = \[([\s\S]*?)\];/)[1];
+    var routes = vm.runInNewContext('[' + routesSource + ']');
+    assert.isAbove(routes.length, 0);
+    assert.isTrue(routes.every(function (route) {
+      return route.indexOf('/v1/') === 0;
+    }));
+    assert.include(routes, '/v1/auth/login');
+    assert.include(routes, '/v1/player-info');
+  });
+
   it('has valid inline JavaScript', function () {
     assert.doesNotThrow(function () {
       new vm.Script(inlineScript);
