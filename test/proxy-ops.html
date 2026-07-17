@@ -163,7 +163,9 @@
     </div>
 
     <div id="apolloFields" class="field-group">
-      <p class="hint" style="margin: 0 0 16px;">GetApolloConfig 无需额外参数，请求体为空对象 {}</p>
+      <label for="apolloKey">Apollo Key（可选）</label>
+      <input id="apolloKey" type="text" placeholder="留空获取 application 全部配置" />
+      <p class="hint">填写 key 获取单项配置；留空时请求体为 {}，返回全部配置</p>
     </div>
 
     <button id="runBtn" type="button">执行 CompressDownload</button>
@@ -294,6 +296,11 @@
           sign: makeSqlSign(sqlBase64, dbaHash),
           _meta: { sql, dbaHash },
         };
+      }
+
+      if (operation === 'GetApolloConfig') {
+        const key = document.getElementById('apolloKey').value.trim();
+        return key ? { key } : {};
       }
 
       return {};
@@ -475,8 +482,19 @@
           const rows = data.data && Array.isArray(data.data.data) ? data.data.data.length : '-';
           showMessage(`执行成功，耗时 ${cost}ms，返回 ${rows} 行`, 'success');
         } else if (operation === 'GetApolloConfig') {
-          const count = data.data ? Object.keys(data.data).length : 0;
-          showMessage(`获取成功，共 ${count} 项配置`, 'success');
+          if (Object.prototype.hasOwnProperty.call(body, 'key')) {
+            const value = data.data == null
+              ? '(null)'
+              : typeof data.data === 'object'
+                ? JSON.stringify(data.data)
+                : String(data.data);
+            showMessage(`获取成功，${body.key}: ${value}`, 'success');
+          } else {
+            const count = data.data && typeof data.data === 'object'
+              ? Object.keys(data.data).length
+              : 0;
+            showMessage(`获取成功，共 ${count} 项配置`, 'success');
+          }
         } else {
           showMessage('请求完成，请查看响应结果', 'success');
         }
