@@ -24,7 +24,8 @@
     "publish:r2:test": "npm run build && PUBLISH_ENV=test node publish/publish-r2.js",
     "publish:r2:prod": "npm run build && PUBLISH_ENV=prod node publish/publish-r2.js",
     "publish:r2:xss-clean:test": "PUBLISH_ENV=test node publish/publish-r2.js --dir xss-clean --prefix xss-clean/",
-    "publish:r2:xss-clean:prod": "PUBLISH_ENV=prod node publish/publish-r2.js --dir xss-clean --prefix xss-clean/"
+    "publish:r2:xss-clean:prod": "PUBLISH_ENV=prod node publish/publish-r2.js --dir xss-clean --prefix xss-clean/",
+    "git:publish": "bash ./release-tag.sh"
   },
   "repository": {
     "type": "git",

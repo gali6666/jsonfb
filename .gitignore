@@ -11,6 +11,7 @@ node_modules
 .yalc
 yalc.lock
 dist
+release-push/
 
 pids
 logs
