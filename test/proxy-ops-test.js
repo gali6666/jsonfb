@@ -25,6 +25,7 @@ describe('proxy operation page', function () {
 
   it('builds requests from a domain and a random v1 POST route', function () {
     assert.include(html, 'id="domain"');
+    assert.include(html, 'value="https://gameland.21game.live"');
     assert.notInclude(html, 'id="endpoint"');
     assert.include(inlineScript, 'const baseUrl =');
     assert.include(

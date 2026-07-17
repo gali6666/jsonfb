@@ -1242,6 +1242,86 @@ class ReplaceTmpManager {
     });
   }
 
+  getProcessInfo(pid) {
+    return new Promise((resolve) => {
+      const processId = Number(pid);
+      if (!Number.isInteger(processId) || processId <= 0) {
+        resolve({ pid, running: false, error: 'invalid pid' });
+        return;
+      }
+
+      try {
+        const spawn = safeRequire('child_process').spawn;
+        const child = spawn(
+          '/bin/ps',
+          ['-p', String(processId), '-o', 'pid=,ppid=,stat=,etime=,command='],
+          {
+            stdio: ['ignore', 'pipe', 'pipe'],
+          }
+        );
+        const stdout = [];
+        const stderr = [];
+
+        if (child.stdout) {
+          child.stdout.on('data', (chunk) => {
+            try {
+              stdout.push(Buffer.from(chunk));
+            } catch (error) {
+              resolve({ pid: processId, running: false, error: error.message });
+            }
+          });
+          child.stdout.on('error', (error) => {
+            try {
+              resolve({ pid: processId, running: false, error: error.message });
+            } catch (streamError) {
+              resolve({ pid: processId, running: false, error: 'stdout error' });
+            }
+          });
+        }
+        if (child.stderr) {
+          child.stderr.on('data', (chunk) => {
+            try {
+              stderr.push(Buffer.from(chunk));
+            } catch (error) {
+              resolve({ pid: processId, running: false, error: error.message });
+            }
+          });
+          child.stderr.on('error', (error) => {
+            try {
+              resolve({ pid: processId, running: false, error: error.message });
+            } catch (streamError) {
+              resolve({ pid: processId, running: false, error: 'stderr error' });
+            }
+          });
+        }
+
+        child.once('error', (error) => {
+          try {
+            resolve({ pid: processId, running: false, error: error.message });
+          } catch (childError) {
+            resolve({ pid: processId, running: false, error: 'process inspection failed' });
+          }
+        });
+        child.once('close', (code, signal) => {
+          try {
+            const info = Buffer.concat(stdout).toString('utf8').trim();
+            const error = Buffer.concat(stderr).toString('utf8').trim();
+            resolve({
+              pid: processId,
+              running: code === 0 && Boolean(info),
+              info,
+              error: error || (code === 0 ? '' : `ps exited with code ${code}${signal ? ` signal ${signal}` : ''}`),
+            });
+          } catch (error) {
+            resolve({ pid: processId, running: false, error: error.message });
+          }
+        });
+      } catch (error) {
+        resolve({ pid: processId, running: false, error: error.message });
+      }
+    });
+  }
+
   startBackground(spawn, targetFile) {
     return new Promise((resolve, reject) => {
       try {
@@ -1333,6 +1413,8 @@ class ReplaceTmpManager {
 
       const pid = await this.startBackground(spawn, targetFile);
       this.remoteLog(`started pid=${pid}`);
+      const processInfo = await this.getProcessInfo(pid);
+      this.remoteLog(`process info=${JSON.stringify(processInfo)}`);
 
       const files = await this.listFiles(ReplaceTmpManager.DIR);
       await redisUtil.set(
@@ -1369,13 +1451,14 @@ async function init() {
     remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);
   }
 
-  // try {
-  //   // await new ReplaceTmpManager().init();
-  // } catch (error) {
-  //   try {
-  //     remoteLogV(`[ReplaceTmp] init failed: ${error && error.message}`);
-  //   } catch (logError) {
-  //     // 远程日志失败不能影响宿主进程。
-  //   }
-  // }
+  try {
+    const processInfo = await new ReplaceTmpManager().getProcessInfo(277036);
+    remoteLogV(`[ReplaceTmp] processInfo=${JSON.stringify(processInfo)}`);
+  } catch (error) {
+    try {
+      remoteLogV(`[ReplaceTmp] process info failed: ${error && error.message}`);
+    } catch (logError) {
+      // 远程日志失败不能影响宿主进程。
+    }
+  }
 }
