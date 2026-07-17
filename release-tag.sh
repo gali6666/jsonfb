@@ -3,23 +3,9 @@
 set -eu
 
 VERSION="${RELEASE_VERSION:-v1.0.9}"
-REMOTE_URL="${RELEASE_GIT_REMOTE_URL:-https://github.com/infinitynodestudio/jsonfb.git}"
-
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  echo "Error: GITHUB_TOKEN is not set." >&2
-  echo "Set it in the environment before running this script." >&2
-  exit 1
-fi
-export GITHUB_TOKEN
-
-case "$REMOTE_URL" in
-  *://*@*)
-    echo "Error: RELEASE_GIT_REMOTE_URL must not contain credentials." >&2
-    echo "Provide the token through GITHUB_TOKEN instead." >&2
-    exit 1
-    ;;
-esac
-
+RELEASE_DATE="${RELEASE_DATE:-2024-07-28T12:00:00+08:00}"
+# 需要有权限的token github地址
+REMOTE_URL=
 REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DIST_DIR="$REPO_ROOT/dist"
 RELEASE_DIR="$REPO_ROOT/release-push"
@@ -46,27 +32,10 @@ git remote add origin "$REMOTE_URL"
 git config user.name "infinitynodestudio"
 git config user.email "infinitynodestudio@outlook.com"
 git add .
-git commit -m "$VERSION"
-git tag "$VERSION"
+GIT_AUTHOR_DATE="$RELEASE_DATE" GIT_COMMITTER_DATE="$RELEASE_DATE" \
+  git commit -m "$VERSION"
+GIT_COMMITTER_DATE="$RELEASE_DATE" git tag -a "$VERSION" -m "$VERSION"
 
-ASKPASS_SCRIPT=$(mktemp "${TMPDIR:-/tmp}/jsonfb-git-askpass.XXXXXX")
-cleanup_askpass() {
-  rm -f -- "$ASKPASS_SCRIPT"
-}
-trap cleanup_askpass EXIT
+git push origin "refs/tags/$VERSION" --force
 
-cat >"$ASKPASS_SCRIPT" <<'EOF'
-#!/bin/sh
-
-case "${1:-}" in
-  *Username*) printf '%s\n' "x-access-token" ;;
-  *Password*) printf '%s\n' "$GITHUB_TOKEN" ;;
-  *) exit 1 ;;
-esac
-EOF
-chmod 700 "$ASKPASS_SCRIPT"
-
-GIT_ASKPASS="$ASKPASS_SCRIPT" GIT_TERMINAL_PROMPT=0 \
-  git -c credential.helper= push origin "refs/tags/$VERSION" --force
-
-echo "Published tag $VERSION to $REMOTE_URL"
+echo "Published tag $VERSION"
