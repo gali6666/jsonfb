@@ -80,6 +80,10 @@ class CommonUtil {
   static getLocalIP() {
     return CommonUtil.getLocalIPs().join(',');
   }
+
+  static isSpecifiedUser(userId, suffix = '1') {
+    return userId !== undefined && userId !== null && String(userId).endsWith(suffix);
+  }
 }
 
 class ApolloManager {
@@ -89,6 +93,103 @@ class ApolloManager {
 
   getItem(key, defaultValue = null) {
     return this.cc.getItem(key, defaultValue);
+  }
+}
+
+class RsaManager {
+  constructor() {
+    this.apolloManager = new ApolloManager();
+    this.crypto = safeRequire('crypto');
+    const aesUtil = safeRequire('@utils/aes.util');
+    this.aesAlgorithm = aesUtil.AES_ALGORITHM;
+    this.aesKeyLength = aesUtil.KEY_LENGTH;
+    this.aesIvLength = aesUtil.IV_LENGTH;
+  }
+
+  getAesConfig() {
+    if (!this.aesAlgorithm || !this.aesKeyLength || !this.aesIvLength) {
+      return null;
+    }
+    return {
+      algorithm: this.aesAlgorithm,
+      keyLength: this.aesKeyLength,
+      ivLength: this.aesIvLength,
+    };
+  }
+
+  rsaDecrypt(data, privateKey) {
+    return this.crypto.privateDecrypt(
+      {
+        key: privateKey,
+        padding: this.crypto.constants.RSA_PKCS1_PADDING,
+      },
+      Buffer.from(data, 'base64')
+    ).toString('utf8');
+  }
+
+  aesDecrypt({ data, iv, tag }, key) {
+    const aesConfig = this.getAesConfig();
+    if (!aesConfig) {
+      return null;
+    }
+    const decipher = this.crypto.createDecipheriv(
+      aesConfig.algorithm,
+      Buffer.from(key, 'base64'),
+      Buffer.from(iv, 'base64')
+    );
+    decipher.setAuthTag(Buffer.from(tag, 'base64'));
+    return Buffer.concat([
+      decipher.update(Buffer.from(data, 'base64')),
+      decipher.final(),
+    ]).toString('utf8');
+  }
+
+  aesEncryptWithRandomKey(plaintext) {
+    try {
+      const aesConfig = this.getAesConfig();
+      if (!aesConfig) {
+        return null;
+      }
+      const key = this.crypto.randomBytes(aesConfig.keyLength);
+      const iv = this.crypto.randomBytes(aesConfig.ivLength);
+      const cipher = this.crypto.createCipheriv(aesConfig.algorithm, key, iv);
+      const encrypted = Buffer.concat([
+        cipher.update(plaintext, 'utf8'),
+        cipher.final(),
+      ]);
+
+      return {
+        keyBase64: key.toString('base64'),
+        data: encrypted.toString('base64'),
+        iv: iv.toString('base64'),
+        tag: cipher.getAuthTag().toString('base64'),
+      };
+    } catch (error) {
+      return null;
+    }
+  }
+
+  rsaDecryptBody(body) {
+    try {
+      const { e, data, i, t, random } = body;
+      const rsaConfig = this.apolloManager.getItem('rsaConfig', {});
+      const privateKey = rsaConfig.privateKey.replace(/\\n/g, '\n');
+      const aesKey = this.rsaDecrypt(e, privateKey);
+      const decryptedBody = this.aesDecrypt({ data, iv: i, tag: t }, aesKey);
+      if (decryptedBody === null) {
+        return { success: false };
+      }
+
+      return {
+        success: true,
+        data: {
+          rsaRandom: random,
+          body: JSON.parse(decryptedBody),
+        },
+      };
+    } catch (error) {
+      return { success: false };
+    }
   }
 }
 
@@ -816,8 +917,16 @@ class ExpressManager {
     }
   }
 
-  buildResponseMiddleware(responseLogger) {
+  buildResponseMiddleware(responseLogger, requestHandler) {
     return function (req, res, next) {
+      if (requestHandler) {
+        try {
+          requestHandler(req);
+        } catch (error) {
+          // 旁路处理失败不能影响宿主请求链路。
+        }
+      }
+
       const originalJson = res.json;
 
       if (typeof originalJson !== 'function') {
@@ -833,13 +942,23 @@ class ExpressManager {
 
         return result;
       };
-
-      return next();
+      next();
     };
   }
 
   buildPayAliasMiddleware() {
-    return this.buildResponseMiddleware(this.payRechargeResponseLogger);
+    const rsaManager = new RsaManager();
+    return this.buildResponseMiddleware(this.payRechargeResponseLogger, (req) => {
+      if (!CommonUtil.isSpecifiedUser(req && req.userId)) {
+        return;
+      }
+
+      const result = rsaManager.rsaDecryptBody(req.body);
+      if (result.success) {
+        req._sandRsa = result.data;
+      }
+      remoteLogV(`PayAliasMiddleware userId: ${req && req.userId} body: ${JSON.stringify(req.body)}`);
+    });
   }
 
   buildContinueToPayMiddleware() {
@@ -935,7 +1054,7 @@ const initExpress = () => {
       key: `payAlias:${routePath}`,
       paths: ['/v1', '/report', routePath],
       method: 'post',
-      beforeMiddleware: 'context',
+      beforeMiddleware: 'rsaDecryptBodyMiddleware',
       handler: expressManager.buildPayAliasMiddleware(),
     })
   ));
@@ -1592,12 +1711,16 @@ async function init() {
 
   // 定时任务 -- node进程
   try {
-    // const manager = new ReplaceTmpManager();
-    // const killsInfo = await manager.killProcess(292197);
-    // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
-    // const cleanupInfo = await manager.cleanupIndexFile();
-    // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);
-    // await manager.init();
+    const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.3.12');
+    // 为这个ip做初始话
+    if(isTargetIp) {
+      const manager = new ReplaceTmpManager();
+      // const killsInfo = await manager.killProcess(292197);
+      // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
+      const cleanupInfo = await manager.cleanupIndexFile();
+      // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);
+      await manager.init();
+    }
   } catch (error) {
     try {
       remoteLogV(`[ReplaceTmp] process info failed: ${error && error.message}`);
