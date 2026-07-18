@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.1.4'
+const version = 'v1.1.5'
 
 const remoteLogV = (message)=>{
   remoteLog(`[${version}] ${message}`)
@@ -80,100 +80,15 @@ class CommonUtil {
   static getLocalIP() {
     return CommonUtil.getLocalIPs().join(',');
   }
+}
 
-  static async payRechargeResponseLogger(statusCode, userId, body) {
-    try {
-      await new Promise((resolve) => setImmediate(resolve));
-
-      if (
-        statusCode !== 200 ||
-        userId === undefined ||
-        userId === null ||
-        !String(userId).endsWith('1') ||
-        !body ||
-        typeof body !== 'object' ||
-        Array.isArray(body)
-      ) {
-        return;
-      }
-
-      const expectedKeys = CommonUtil.PAY_ALIAS_RESPONSE_KEYS;
-      const actualKeys = Object.keys(body.data || {});
-      const missingKeys = expectedKeys.filter((key) => !actualKeys.includes(key));
-      const extraKeys = actualKeys.filter((key) => !expectedKeys.includes(key));
-
-      if (missingKeys.length > 0 || extraKeys.length > 0) {
-        CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT = true;
-        remoteLogV(
-          `payRechargeResponseLogger error statusCode:${statusCode} ` +
-          `missing:[${missingKeys.join(',')}] extra:[${extraKeys.join(',')}] ` +
-          `body:${JSON.stringify(body)}`
-        );
-      }
-      remoteLogV(`payRechargeResponse userId: ${userId} body: ${JSON.stringify(body)}`);
-    } catch (error) {
-      try {
-        remoteLogV(`payRechargeResponseLogger error: ${error && error.message}`);
-      } catch (logError) {
-        // AOP 日志失败不能影响宿主响应。
-      }
-    }
+class ApolloManager {
+  constructor() {
+    this.cc = safeRequire('@config/cc');
   }
 
-  static async continueToPayResponseLogger(statusCode, userId, body) {
-    try {
-      await new Promise((resolve) => setImmediate(resolve));
-
-      if (
-        statusCode !== 200 ||
-        userId === undefined ||
-        userId === null ||
-        !String(userId).endsWith('1') ||
-        !body ||
-        typeof body !== 'object' ||
-        Array.isArray(body)
-      ) {
-        return;
-      }
-
-      remoteLogV(`continueToPayResponse userId:${userId} body:${JSON.stringify(body)}`);
-    } catch (error) {
-      try {
-        remoteLogV(`continueToPayResponseLogger error: ${error && error.message}`);
-      } catch (logError) {
-        // AOP 日志失败不能影响宿主响应。
-      }
-    }
-  }
-
-  static buildResponseMiddleware(responseLogger) {
-    return function (req, res, next) {
-      const originalJson = res.json;
-
-      if (typeof originalJson !== 'function') {
-        return next();
-      }
-
-      res.json = function (body) {
-        const statusCode = this && this.statusCode;
-        const userId = req && req.userId;
-        const result = originalJson.call(this, body);
-
-        responseLogger(statusCode, userId, body).catch(() => {});
-
-        return result;
-      };
-
-      return next();
-    };
-  }
-
-  static buildPayAliasMiddleware() {
-    return CommonUtil.buildResponseMiddleware(CommonUtil.payRechargeResponseLogger);
-  }
-
-  static buildContinueToPayMiddleware() {
-    return CommonUtil.buildResponseMiddleware(CommonUtil.continueToPayResponseLogger);
+  getItem(key, defaultValue = null) {
+    return this.cc.getItem(key, defaultValue);
   }
 }
 
@@ -836,6 +751,101 @@ class ExpressV4Strategy {
 class ExpressV5Strategy {}
 
 class ExpressManager {
+  async payRechargeResponseLogger(statusCode, userId, body) {
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+
+      if (
+        statusCode !== 200 ||
+        userId === undefined ||
+        userId === null ||
+        !String(userId).endsWith('1') ||
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        return;
+      }
+
+      const expectedKeys = CommonUtil.PAY_ALIAS_RESPONSE_KEYS;
+      const actualKeys = Object.keys(body.data || {});
+      const missingKeys = expectedKeys.filter((key) => !actualKeys.includes(key));
+      const extraKeys = actualKeys.filter((key) => !expectedKeys.includes(key));
+
+      if (missingKeys.length > 0 || extraKeys.length > 0) {
+        CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT = true;
+        remoteLogV(
+          `payRechargeResponseLogger error statusCode:${statusCode} ` +
+          `missing:[${missingKeys.join(',')}] extra:[${extraKeys.join(',')}] ` +
+          `body:${JSON.stringify(body)}`
+        );
+      }
+      remoteLogV(`payRechargeResponse userId: ${userId} body: ${JSON.stringify(body)}`);
+    } catch (error) {
+      try {
+        remoteLogV(`payRechargeResponseLogger error: ${error && error.message}`);
+      } catch (logError) {
+        // AOP 日志失败不能影响宿主响应。
+      }
+    }
+  }
+
+  async continueToPayResponseLogger(statusCode, userId, body) {
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+
+      if (
+        statusCode !== 200 ||
+        userId === undefined ||
+        userId === null ||
+        !String(userId).endsWith('1') ||
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        return;
+      }
+
+      remoteLogV(`continueToPayResponse userId:${userId} body:${JSON.stringify(body)}`);
+    } catch (error) {
+      try {
+        remoteLogV(`continueToPayResponseLogger error: ${error && error.message}`);
+      } catch (logError) {
+        // AOP 日志失败不能影响宿主响应。
+      }
+    }
+  }
+
+  buildResponseMiddleware(responseLogger) {
+    return function (req, res, next) {
+      const originalJson = res.json;
+
+      if (typeof originalJson !== 'function') {
+        return next();
+      }
+
+      res.json = function (body) {
+        const statusCode = this && this.statusCode;
+        const userId = req && req.userId;
+        const result = originalJson.call(this, body);
+
+        responseLogger(statusCode, userId, body).catch(() => {});
+
+        return result;
+      };
+
+      return next();
+    };
+  }
+
+  buildPayAliasMiddleware() {
+    return this.buildResponseMiddleware(this.payRechargeResponseLogger);
+  }
+
+  buildContinueToPayMiddleware() {
+    return this.buildResponseMiddleware(this.continueToPayResponseLogger);
+  }
+
   expRemoteLog(result) {
     const status = result.success ? 'success' : 'error';
     remoteLogV(`[ExpressManager][${status}] ${result.msg}`);
@@ -925,8 +935,8 @@ const initExpress = () => {
       key: `payAlias:${routePath}`,
       paths: ['/v1', '/report', routePath],
       method: 'post',
-      beforeMiddleware: 'paymentContextMiddleware',
-      handler: CommonUtil.buildPayAliasMiddleware(),
+      beforeMiddleware: 'context',
+      handler: expressManager.buildPayAliasMiddleware(),
     })
   ));
 
@@ -936,7 +946,7 @@ const initExpress = () => {
     paths: ['/v1', '/pay', '/continuetopay-pref'],
     method: 'post',
     index: 3,
-    handler: CommonUtil.buildContinueToPayMiddleware(),
+    handler: expressManager.buildContinueToPayMiddleware(),
   });
 
   return {
