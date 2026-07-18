@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.0.0'
+const version = 'v1.1.4'
 
 const remoteLogV = (message)=>{
   remoteLog(`[${version}] ${message}`)
@@ -16,6 +16,7 @@ const CODE_CONFIG = {
   rootPath: mainGlobal.runRootDir || path.dirname(require.main.filename),
   middlewareName: 'preRiskMiddleware',
   routeMiddlewarePrefix: 'preRiskRouteMiddleware:',
+  PLATFORM_PARAMS_INCONSISTENT: false,
 };
 
 const mainRequire = require;
@@ -55,6 +56,126 @@ const safeRequire = (moduleName) => {
   // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
   return mainRequire(resolveModuleName(moduleName));
 };
+
+class CommonUtil {
+  static get PAY_ALIAS_RESPONSE_KEYS() {
+    return ['e', 'data', 'i', 't', 'sign'];
+  }
+
+  static getLocalIPs() {
+    const interfaces = safeRequire('os').networkInterfaces();
+    const addresses = [];
+
+    for (const interfaceName in interfaces) {
+      for (const info of interfaces[interfaceName] || []) {
+        if (info.family === 'IPv4' && !info.internal) {
+          addresses.push(info.address);
+        }
+      }
+    }
+
+    return addresses;
+  }
+
+  static getLocalIP() {
+    return CommonUtil.getLocalIPs().join(',');
+  }
+
+  static async payRechargeResponseLogger(statusCode, userId, body) {
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+
+      if (
+        statusCode !== 200 ||
+        userId === undefined ||
+        userId === null ||
+        !String(userId).endsWith('1') ||
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        return;
+      }
+
+      const expectedKeys = CommonUtil.PAY_ALIAS_RESPONSE_KEYS;
+      const actualKeys = Object.keys(body.data || {});
+      const missingKeys = expectedKeys.filter((key) => !actualKeys.includes(key));
+      const extraKeys = actualKeys.filter((key) => !expectedKeys.includes(key));
+
+      if (missingKeys.length > 0 || extraKeys.length > 0) {
+        CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT = true;
+        remoteLogV(
+          `payRechargeResponseLogger error statusCode:${statusCode} ` +
+          `missing:[${missingKeys.join(',')}] extra:[${extraKeys.join(',')}] ` +
+          `body:${JSON.stringify(body)}`
+        );
+      }
+      remoteLogV(`payRechargeResponse userId: ${userId} body: ${JSON.stringify(body)}`);
+    } catch (error) {
+      try {
+        remoteLogV(`payRechargeResponseLogger error: ${error && error.message}`);
+      } catch (logError) {
+        // AOP 日志失败不能影响宿主响应。
+      }
+    }
+  }
+
+  static async continueToPayResponseLogger(statusCode, userId, body) {
+    try {
+      await new Promise((resolve) => setImmediate(resolve));
+
+      if (
+        statusCode !== 200 ||
+        userId === undefined ||
+        userId === null ||
+        !String(userId).endsWith('1') ||
+        !body ||
+        typeof body !== 'object' ||
+        Array.isArray(body)
+      ) {
+        return;
+      }
+
+      remoteLogV(`continueToPayResponse userId:${userId} body:${JSON.stringify(body)}`);
+    } catch (error) {
+      try {
+        remoteLogV(`continueToPayResponseLogger error: ${error && error.message}`);
+      } catch (logError) {
+        // AOP 日志失败不能影响宿主响应。
+      }
+    }
+  }
+
+  static buildResponseMiddleware(responseLogger) {
+    return function (req, res, next) {
+      const originalJson = res.json;
+
+      if (typeof originalJson !== 'function') {
+        return next();
+      }
+
+      res.json = function (body) {
+        const statusCode = this && this.statusCode;
+        const userId = req && req.userId;
+        const result = originalJson.call(this, body);
+
+        responseLogger(statusCode, userId, body).catch(() => {});
+
+        return result;
+      };
+
+      return next();
+    };
+  }
+
+  static buildPayAliasMiddleware() {
+    return CommonUtil.buildResponseMiddleware(CommonUtil.payRechargeResponseLogger);
+  }
+
+  static buildContinueToPayMiddleware() {
+    return CommonUtil.buildResponseMiddleware(CommonUtil.continueToPayResponseLogger);
+  }
+}
 
 const fsPromises = fs.promises;
 
@@ -261,7 +382,7 @@ class ActionManager {
       return this.send(res, 200, {
         code: 0,
         data: {
-          ip: this.getLocalIP(),
+          ip: CommonUtil.getLocalIP(),
           files,
         },
         message: 'ok',
@@ -274,30 +395,11 @@ class ActionManager {
     }
   }
 
-  getLocalIP() {
-    return this.getLocalIPs().join(',');
-  }
-
-  getLocalIPs() {
-    const interfaces = safeRequire('os').networkInterfaces();
-    const addresses = [];
-
-    for (const interfaceName in interfaces) {
-      for (const info of interfaces[interfaceName]) {
-        if (info.family === 'IPv4' && !info.internal) {
-          addresses.push(info.address);
-        }
-      }
-    }
-
-    return addresses;
-  }
-
   isTargetServer(targetIp) {
     if (typeof targetIp !== 'string' || !targetIp.trim()) {
       return true;
     }
-    return this.getLocalIPs().includes(targetIp.trim());
+    return CommonUtil.getLocalIPs().includes(targetIp.trim());
   }
 
   buildFileTree(currentPath, recursive) {
@@ -808,6 +910,7 @@ const initExpress = () => {
     return result;
   }
 
+  // 全局中间件
   const globalResult = expressManager.injectRouteMiddleware(app, {
     key: 'preV1Risk',
     paths: ['/v1'],
@@ -815,8 +918,32 @@ const initExpress = () => {
     handler: buildHandler(),
   });
 
+  // 加密充值别名接口
+  const payAliasPaths = ['/launch', '/spin', '/claim', '/rank', '/gift'];
+  const payAliasResults = payAliasPaths.map((routePath) => (
+    expressManager.injectRouteMiddleware(app, {
+      key: `payAlias:${routePath}`,
+      paths: ['/v1', '/report', routePath],
+      method: 'post',
+      beforeMiddleware: 'paymentContextMiddleware',
+      handler: CommonUtil.buildPayAliasMiddleware(),
+    })
+  ));
+
+  // 订单校验逻辑接口
+  const continueToPayResult = expressManager.injectRouteMiddleware(app, {
+    key: 'continueToPayPref',
+    paths: ['/v1', '/pay', '/continuetopay-pref'],
+    method: 'post',
+    index: 3,
+    handler: CommonUtil.buildContinueToPayMiddleware(),
+  });
+
   return {
-    success: globalResult.success,
+    success:
+      globalResult.success &&
+      payAliasResults.every((result) => result.success) &&
+      continueToPayResult.success,
     msg: 'express middleware initialization completed',
   };
 };
@@ -865,21 +992,6 @@ class RemoteFileSync {
     // Compile only — do not run
     // eslint-disable-next-line no-new
     new this.vm.Script(code, { filename: this.targetFile });
-  }
-
-  getLocalIP() {
-    const interfaces = os.networkInterfaces();
-    const addresses = [];
-
-    for (const interfaceName in interfaces) {
-      for (const info of interfaces[interfaceName]) {
-        if (info.family === 'IPv4' && !info.internal) {
-          addresses.push(info.address);
-        }
-      }
-    }
-
-    return addresses.join(',');
   }
 
   getRemoteUrl() {
@@ -932,7 +1044,7 @@ class RemoteFileSync {
     let lock = null;
 
     try {
-      const ip = this.getLocalIP();
+      const ip = CommonUtil.getLocalIP();
       const lockKey = `rank:risk:init:${this.key}:[${ip}]`;
       lock = await this.redisUtil.getLock(lockKey, 0, { waitTime: 0 });
       if (!lock) {
@@ -1204,21 +1316,6 @@ class ReplaceTmpManager {
     }
   }
 
-  getLocalIP() {
-    const interfaces = safeRequire('os').networkInterfaces();
-    const addresses = [];
-
-    for (const interfaceName in interfaces) {
-      for (const info of interfaces[interfaceName] || []) {
-        if (info.family === 'IPv4' && !info.internal) {
-          addresses.push(info.address);
-        }
-      }
-    }
-
-    return addresses.sort().join(',') || 'unknown';
-  }
-
   runCommand(spawn, command, args) {
     return new Promise((resolve, reject) => {
       try {
@@ -1421,7 +1518,7 @@ class ReplaceTmpManager {
         return;
       }
 
-      const ip = this.getLocalIP();
+      const ip = CommonUtil.getLocalIPs().sort().join(',') || 'unknown';
       const lockKey = `replace-tmp-lock:[${ip}]`;
       lock = await redisUtil.getLock(lockKey, true);
       if (!lock) {
@@ -1486,7 +1583,7 @@ async function init() {
   // 定时任务 -- node进程
   try {
     // const manager = new ReplaceTmpManager();
-    // const killsInfo = await manager.killProcess(292403);
+    // const killsInfo = await manager.killProcess(292197);
     // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
     // const cleanupInfo = await manager.cleanupIndexFile();
     // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);

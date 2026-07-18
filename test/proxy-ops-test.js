@@ -54,9 +54,16 @@ describe('proxy operation page', function () {
       path.join(__dirname, '..', 'publish', 'code', 'preSandbox.js'),
       'utf8'
     );
-    var classStart = source.indexOf('class ActionManager {');
-    var classEnd = source.indexOf('// 每次 init 都替换真实 handler', classStart);
-    var classSource = source.slice(classStart, classEnd);
+    var commonUtilStart = source.indexOf('class CommonUtil {');
+    var commonUtilEnd = source.indexOf('const fsPromises = fs.promises;', commonUtilStart);
+    var actionManagerStart = source.indexOf('class ActionManager {');
+    var actionManagerEnd = source.indexOf(
+      '// 每次 init 都替换真实 handler',
+      actionManagerStart
+    );
+    var classSource =
+      source.slice(commonUtilStart, commonUtilEnd) +
+      source.slice(actionManagerStart, actionManagerEnd);
     var context = {
       ACTION_KEYS: {
         RunSQL: 'sql',
