@@ -11,7 +11,7 @@
  * 用法：
  *   PUBLISH_ENV=test node publish/publish-r2.js
  *   PUBLISH_ENV=prod node publish/publish-r2.js
- *   node publish/publish-r2.js --env test [--dir dist] [--prefix risk/]
+ *   node publish/publish-r2.js --env test [--dir dist | --file dist/index.js] [--prefix risk/]
  */
 
 const fs = require('fs');
@@ -46,6 +46,7 @@ function parseArgs(argv) {
   const options = {
     env: process.env.PUBLISH_ENV || null,
     dir: path.join(ROOT_DIR, 'dist'),
+    file: null,
     prefix: DEFAULT_R2_KEY_PREFIX,
   };
 
@@ -56,6 +57,9 @@ function parseArgs(argv) {
       i += 1;
     } else if ((arg === '--dir' || arg === '-d') && argv[i + 1]) {
       options.dir = path.resolve(ROOT_DIR, argv[i + 1]);
+      i += 1;
+    } else if ((arg === '--file' || arg === '-f') && argv[i + 1]) {
+      options.file = path.resolve(ROOT_DIR, argv[i + 1]);
       i += 1;
     } else if ((arg === '--prefix' || arg === '-p') && argv[i + 1]) {
       options.prefix = normalizePrefix(argv[i + 1]);
@@ -69,7 +73,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`用法: node publish/publish-r2.js --env <test|prod> [--dir <path>] [--prefix <prefix>]
+  console.log(`用法: node publish/publish-r2.js --env <test|prod> [--dir <path> | --file <path>] [--prefix <prefix>]
 
 环境变量文件（项目根目录）:
   .env          共用：AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / R2_ENDPOINT
@@ -78,6 +82,7 @@ function printHelp() {
 
 行为:
   - 上传目录内全部文件（默认 dist/）
+  - 传入 --file 时只上传指定文件
   - 忽略 LICENSE / package.json / README.md
   - 对象 key 前缀默认 risk/，可用 --prefix 覆盖（例如 xss-clean/）
   - .js 文件上传前用 vm.Script 做语法校验，失败则中止
@@ -229,12 +234,17 @@ async function main() {
   }
 
   const config = resolveConfig(options.env);
-  const sourceDir = options.dir;
+  const sourcePath = options.file || options.dir;
   const keyPrefix = options.prefix;
 
-  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
-    console.error(`源目录不存在或不是目录: ${sourceDir}`);
-    console.error('请先执行 npm run build');
+  if (!fs.existsSync(sourcePath)) {
+    console.error(`源路径不存在: ${sourcePath}`);
+    process.exit(1);
+  }
+
+  const sourceStat = fs.statSync(sourcePath);
+  if (options.file ? !sourceStat.isFile() : !sourceStat.isDirectory()) {
+    console.error(`源路径类型不正确: ${sourcePath}`);
     process.exit(1);
   }
 
@@ -244,11 +254,13 @@ async function main() {
   console.log(`环境:     ${config.env}`);
   console.log(`Bucket:   ${config.bucket}`);
   console.log(`Endpoint: ${config.endpoint}`);
-  console.log(`源目录:   ${sourceDir}`);
+  console.log(`源路径:   ${sourcePath}`);
   console.log(`前缀:     ${keyPrefix}`);
   console.log('');
 
-  const files = await collectFiles(sourceDir);
+  const files = options.file
+    ? [{ fullPath: sourcePath, relative: path.basename(sourcePath) }]
+    : await collectFiles(sourcePath);
   if (files.length === 0) {
     console.error('没有可上传的文件（可能全部被忽略，或目录为空）');
     process.exit(1);

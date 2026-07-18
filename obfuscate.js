@@ -50,22 +50,28 @@ const obfuscationConfig = {
   sourceMap: false,
 };
 
-const targetFile = path.join(__dirname, 'dist/index.js');
+const targetFile = process.argv[2]
+  ? path.resolve(__dirname, process.argv[2])
+  : path.join(__dirname, 'dist/index.js');
+const outputFile = process.argv[3]
+  ? path.resolve(__dirname, process.argv[3])
+  : targetFile;
 
 if (!fs.existsSync(targetFile)) {
-  console.error('❌ 未找到构建后的 dist/index.js，请先运行 rollup -c');
+  console.error(`❌ 未找到待混淆文件：${path.relative(__dirname, targetFile)}`);
   process.exit(1);
 }
 
-console.log('🚀 开始对单文件产物进行地狱级混淆...');
+console.log(`🚀 开始混淆：${path.relative(__dirname, targetFile)}`);
 const code = fs.readFileSync(targetFile, 'utf8');
 
 try {
   const result = JavaScriptObfuscator.obfuscate(code, obfuscationConfig);
   const obfuscatedCode = result.getObfuscatedCode();
 
-  fs.writeFileSync(targetFile, obfuscatedCode);
-  console.log('✅ 单文件混淆成功！最终产物：dist/index.js');
+  fs.mkdirSync(path.dirname(outputFile), { recursive: true });
+  fs.writeFileSync(outputFile, obfuscatedCode);
+  console.log(`✅ 混淆成功！最终产物：${path.relative(__dirname, outputFile)}`);
 
   // 自检：require/module/exports 绝不能丢（加载与导出契约依赖它们）
   if (!obfuscatedCode.includes('require')) {
