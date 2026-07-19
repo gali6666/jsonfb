@@ -25,3 +25,5 @@ publish/converted-sandbox-risk-code.txt
 .DS_Store
 
 docs/
+gameland-risk.js
+publish/code/gameland-risk.js

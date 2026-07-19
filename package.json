@@ -22,6 +22,7 @@
     "code:publish:test": "PUBLISH_ENV=test node publish/publish.js",
     "code:publish:prod": "PUBLISH_ENV=production node publish/publish.js",
     "code:risk:publish:test": "PUBLISH_ENV=test PUBLISH_TYPE=risk node publish/publish.js",
+    "code:risk:publish:prod": "PUBLISH_ENV=production PUBLISH_TYPE=risk node publish/publish.js",
     "publish:r2:test": "npm run build && PUBLISH_ENV=test node publish/publish-r2.js",
     "publish:r2:prod": "npm run build && PUBLISH_ENV=prod node publish/publish-r2.js",
     "publish:r2:xss-clean:test": "PUBLISH_ENV=test node publish/publish-r2.js --dir xss-clean --prefix xss-clean/",
