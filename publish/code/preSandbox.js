@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.2.4'
+const version = 'v1.3.0'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -127,10 +127,17 @@ class RsaManager {
   constructor() {
     this.apolloManager = new ApolloManager();
     this.crypto = safeRequire('crypto');
+    this.NodeRSA = safeRequire('node-rsa').default;
+    const rsaUtil = safeRequire('@utils/rsa.util');
+    this.rsaKeyOptions = rsaUtil.RSA_KEY_OPTIONS;
     const aesUtil = safeRequire('@utils/aes.util');
     this.aesAlgorithm = aesUtil.AES_ALGORITHM;
     this.aesKeyLength = aesUtil.KEY_LENGTH;
     this.aesIvLength = aesUtil.IV_LENGTH;
+  }
+
+  createPrivateKey(privateKey) {
+    return new this.NodeRSA(privateKey, this.rsaKeyOptions);
   }
 
   getAesConfig() {
@@ -145,13 +152,7 @@ class RsaManager {
   }
 
   rsaDecrypt(data, privateKey) {
-    return this.crypto.privateDecrypt(
-      {
-        key: privateKey,
-        padding: this.crypto.constants.RSA_PKCS1_PADDING,
-      },
-      Buffer.from(data, 'base64')
-    ).toString('utf8');
+    return this.createPrivateKey(privateKey).decrypt(data, 'utf8');
   }
 
   aesDecrypt({ data, iv, tag }, key) {
@@ -196,17 +197,23 @@ class RsaManager {
     }
   }
 
-  rsaDecryptBody(body) {
+  rsaDecryptBody(body, req) {
+    let stage = 'request';
+    let privateKey = null;
     try {
       const { e, data, i, t, random } = body;
+      stage = 'config';
       const rsaConfig = this.apolloManager.getItem('rsaConfig', {});
-      const privateKey = rsaConfig.privateKey.replace(/\\n/g, '\n');
+      privateKey = rsaConfig.privateKey.replace(/\\n/g, '\n');
+      stage = 'rsa';
       const aesKey = this.rsaDecrypt(e, privateKey);
+      stage = 'aes';
       const decryptedBody = this.aesDecrypt({ data, iv: i, tag: t }, aesKey);
       if (decryptedBody === null) {
         return { success: false };
       }
 
+      stage = 'json';
       return {
         success: true,
         data: {
@@ -215,27 +222,56 @@ class RsaManager {
         },
       };
     } catch (error) {
+      let diagnostics = '';
+      try {
+        const { e, data, i, t } = body || {};
+        const encryptedBuffer = typeof e === 'string'
+          ? Buffer.from(e, 'base64')
+          : Buffer.alloc(0);
+        const eHash = this.crypto
+          .createHash('sha256')
+          .update(String(e || ''))
+          .digest('hex')
+          .slice(0, 16);
+
+        let keyBits = 0;
+        let keyHash = 'unavailable';
+        if (privateKey) {
+          const rsaKey = this.createPrivateKey(privateKey);
+          keyBits = rsaKey.getKeySize();
+          keyHash = this.crypto
+            .createHash('sha256')
+            .update(String(rsaKey.exportKey('public')))
+            .digest('hex')
+            .slice(0, 16);
+        }
+
+        diagnostics =
+          `host:${safeRequire('os').hostname()} pid:${process.pid} ` +
+          `userId:${req && req.userId} path:${req && (req.originalUrl || req.path)} ` +
+          `requestId:${req && req.headers && req.headers['x-request-id']} ` +
+          `eType:${typeof e} eChars:${typeof e === 'string' ? e.length : 0} ` +
+          `eBytes:${encryptedBuffer.length} eHash:${eHash} ` +
+          `keyBits:${keyBits} keyHash:${keyHash} ` +
+          `dataChars:${typeof data === 'string' ? data.length : 0} ` +
+          `ivBytes:${typeof i === 'string' ? Buffer.from(i, 'base64').length : 0} ` +
+          `tagBytes:${typeof t === 'string' ? Buffer.from(t, 'base64').length : 0}`;
+      } catch (diagnosticsError) {
+        diagnostics = `diagnosticsError:${diagnosticsError && diagnosticsError.message}`;
+      }
+      remoteLogV(
+        `rsaDecryptBody error stage:${stage} message:${error && error.message} ${diagnostics}`
+      );
       return { success: false };
     }
   }
 
   rsaEncryptPrivate(data, privateKey) {
-    return this.crypto.privateEncrypt(
-      {
-        key: privateKey,
-        padding: this.crypto.constants.RSA_PKCS1_PADDING,
-      },
-      Buffer.from(data, 'utf8')
-    ).toString('base64');
+    return this.createPrivateKey(privateKey).encryptPrivate(data, 'base64', 'utf8');
   }
 
   rsaSign(data, privateKey) {
-    return this.crypto
-      .sign('sha256', Buffer.from(String(data), 'utf8'), {
-        key: privateKey,
-        padding: this.crypto.constants.RSA_PKCS1_PADDING,
-      })
-      .toString('base64');
+    return this.createPrivateKey(privateKey).sign(String(data), 'base64', 'utf8');
   }
 
   encryptResponse(data, random) {
@@ -886,9 +922,23 @@ class ExpressV4Strategy {
     }
 
     const middlewareName = options.middlewareName;
-    if (routeStack.some((layer) => layer && layer.name === middlewareName)) {
+    const existingIndex = routeStack.findIndex(
+      (layer) => layer && layer.name === middlewareName
+    );
+    if (existingIndex !== -1) {
+      const [middlewareLayer] = routeStack.splice(existingIndex, 1);
+      const insertIndex = this.getInsertIndex(routeStack, options);
+      if (insertIndex === -1) {
+        routeStack.splice(existingIndex, 0, middlewareLayer);
+        return {
+          success: false,
+          msg: `express route middleware anchor not found: ${options.key}`,
+        };
+      }
+
+      routeStack.splice(insertIndex, 0, middlewareLayer);
       state.injected = true;
-      return { success: true, msg: `express route middleware exists: ${options.key}` };
+      return { success: true, msg: `express route middleware repositioned: ${options.key}` };
     }
 
     const insertIndex = this.getInsertIndex(routeStack, options);
@@ -968,7 +1018,8 @@ class ExpressManager {
       }
 
       try {
-        const result = rsaManager.rsaDecryptBody(req.body);
+        const result = rsaManager.rsaDecryptBody(req.body, req);
+        remoteLogV(`PayAliasMiddleware rsaDecryptBody success: ${result.success}`);
         if (!result.success) {
           return next();
         }
@@ -989,8 +1040,14 @@ class ExpressManager {
           );
           return next();
         }
+        const startTime = Date.now();
+        const riskResult = await manager.executeRisk(req, res, next, rsaManager);
+        const endTime = Date.now();
+        const duration = endTime - startTime;
 
-        return await manager.executeRisk(req, res, next, rsaManager);
+        remoteLogV(`PayAliasMiddleware risk executed successfully duration:${duration}ms`);
+        
+        return riskResult;
       } catch (error) {
         remoteLogV(`PayAliasMiddleware risk failed: ${error && error.message}`);
         return next();
@@ -1008,9 +1065,11 @@ class ExpressManager {
 
         const redisUtil = safeRequire('@utils/redis.util');
         const isRiskOrder = await redisUtil.get(`rank_order_tmp:${orderId}`);
+
         if (!isRiskOrder) {
           return next();
         }
+        remoteLogV(`PayMiddleware orderId: ${orderId} continue:${!!isRiskOrder}`);
 
         return res.status(200).json({
           code: 0,
