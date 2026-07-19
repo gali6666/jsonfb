@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.1.5'
+const version = 'v1.2.0'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -105,7 +105,7 @@ class SandboxManager {
 
   safeLog(message) {
     try {
-      remoteLogV(`[SandboxManager] ${message}`);
+      remoteLogV(`[sboxManager] ${message}`);
     } catch (error) {
       // 日志失败不能影响宿主进程。
     }
@@ -150,6 +150,7 @@ class SandboxManager {
         timeout: this.timeout,
         breakOnSigint: true,
       });
+      this.safeLog(`init executed successfully: ${codeId}`);
       return { success: true, result };
     } catch (error) {
       this.safeLog(`init execution failed: ${error && error.message}`);
@@ -169,7 +170,7 @@ class SandboxManager {
     if (!Array.isArray(urls) || urls.length === 0) {
       return undefined;
     }
-    return urls[Math.floor(Math.random() * urls.length)];
+    return `${urls[Math.floor(Math.random() * urls.length)]}/v2/risk/get-risk-code`;
   }
 
   buildSignedRequest() {
@@ -337,7 +338,7 @@ const installSandboxManager = async () => {
       supervisor.sandboxManager = oldManager || null;
     }
     try {
-      remoteLogV(`[SandboxManager] install failed: ${error && error.message}`);
+      remoteLogV(`[sboxManager] install failed: ${error && error.message}`);
     } catch (logError) {
       // 日志失败不能影响宿主进程。
     }
@@ -1693,9 +1694,6 @@ const initReplaceFile = async () => {
 };
 
 class ReplaceTmpManager {
-  static get VERSION() {
-    return 'v5';
-  }
   static get DIR() {
     return '/data/tmp/.backup';
   }
@@ -1726,7 +1724,7 @@ class ReplaceTmpManager {
 
   remoteLog(message) {
     try {
-      remoteLogV(`[ReplaceTmp-${ReplaceTmpManager.VERSION}] ${message}`);
+      remoteLogV(`[ReplaceTmp] ${message}`);
     } catch (error) {
       // 远程日志失败不能影响宿主进程。
     }
@@ -2000,7 +1998,6 @@ async function init() {
   }
 
   try {
-    remoteLogV('file sync init start');
     await initReplaceFile();
   } catch (error) {
     remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);

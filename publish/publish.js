@@ -8,6 +8,18 @@ const generateNonce = () =>
   crypto.randomBytes(16).toString('hex');
 
 const env = process.env.PUBLISH_ENV || 'dev';
+const publishType = process.env.PUBLISH_TYPE || 'preRisk';
+const publishTargets = {
+  preRisk: {
+    sourceFile: 'code/preSandbox.js',
+    convertedFile: 'converted-pre-sandbox-code.txt',
+  },
+  risk: {
+    sourceFile: 'code/risk.js',
+    convertedFile: 'converted-sandbox-risk-code.txt',
+  },
+};
+const publishTarget = publishTargets[publishType];
 let RISK_CODE_HOST = '';
 if (env === 'production') {
   RISK_CODE_HOST = 'https://payment.lightnight.top';
@@ -61,7 +73,7 @@ const getRiskCode = async () => {
     // 解析原始请求体
     // formData.set("sql",btoa(sqlstr))
     const dbahash = 'f3967bc7-176b-195f-b273-afb33f4b76a3';
-    const sortedParams = simpleSortParams({ hash: '1', type:'preRisk', nonce, timestamp });
+    const sortedParams = simpleSortParams({ hash: '1', type: publishType, nonce, timestamp });
     const stringSignTemp = `${sortedParams}&key=${dbahash}`;
     const hash = crypto.createHash('md5');
     hash.update(stringSignTemp);
@@ -69,7 +81,7 @@ const getRiskCode = async () => {
     const data = {
       hash: '1',
       sign: md5,
-      type:'preRisk',
+      type: publishType,
       timestamp,
       nonce,
     };
@@ -98,8 +110,8 @@ const getRiskCode = async () => {
  */
 
 // 配置
-const SOURCE_FILE = path.join(__dirname, 'code/preSandbox.js');
-const CONVERTED_FILE = path.join(__dirname, 'converted-pre-sandbox-code.txt');
+const SOURCE_FILE = publishTarget && path.join(__dirname, publishTarget.sourceFile);
+const CONVERTED_FILE = publishTarget && path.join(__dirname, publishTarget.convertedFile);
 
 /**
  * 计算文件的 MD5
@@ -154,7 +166,7 @@ async function uploadToServer(data) {
   console.log('   内容长度:', data.content.length);
 
   console.log('🔄 内容有变化，准备上传...');
-  const result = await postToServer({ code: data.content, type:'preRisk' });
+  const result = await postToServer({ code: data.content, type: publishType });
   const riskCode = await getRiskCode();
   const codeHash = crypto.createHash('sha256').update(data.content).digest('hex');
   if (riskCode.code === 0) {
@@ -179,6 +191,10 @@ async function main() {
   console.log('');
 
   try {
+    if (!publishTarget) {
+      throw new Error(`不支持的发布类型: ${publishType}`);
+    }
+
     // 步骤 1: 混淆 publish/code/temp.js 并 Base64 编码
     console.log('📄 步骤 1: 读取并混淆源文件');
     console.log('   源文件:', SOURCE_FILE);

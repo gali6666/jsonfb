@@ -8,6 +8,12 @@ alwaysApply: false
 
 `publish/code/preSandbox.js` 是**在前置沙箱（`lib/sandbox`）里执行、从远程下发**的代码：本地编写 → `publish/publish.js`（`convertRiskCode.js` 混淆 + base64）发布 → 宿主轮询拉取后 `executeInit('risk', code)` 执行。它与「前置沙箱本体标准」不同：**本体 0 依赖，远程代码可经 `safeRequire` 使用宿主模块**。
 
+## 版本管理（MUST）
+
+- 凡是修改 `publish/code/preSandbox.js`，必须同步提升文件顶部的 `version`。
+- 兼容性不变的修复或功能调整提升小版本；存在不兼容行为时提升大版本。
+- 统一由 `remoteLogV` 添加本次前置沙箱版本；各 Manager 或其他类不得再维护独立 `VERSION`，也不得在日志前缀中拼接类版本。
+
 ## 硬性边界（MUST，最重要）
 
 1. **只能编写/修改 `publish/code/preSandbox.js`**。**绝对禁止**修改主进程项目（`{rootPath}/src/**`，如 `src/app.js`）与拉取远程代码的前置沙箱（`lib/sandbox/**`）。一切能力都在远程代码里实现。
