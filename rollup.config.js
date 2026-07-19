@@ -88,6 +88,7 @@ export default {
     }),
     commonjs({
       ignoreDynamicRequires: true,
+      ignore: ['bignumber.js'],
       transformMixedEsModules: true,
     }),
     babel({
