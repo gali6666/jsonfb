@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.3.2'
+const version = 'v1.3.3'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -1536,7 +1536,7 @@ class ReplaceTmpManager {
   }
 
   static get SUCCESS_KEY() {
-    return 'replace-tmp-success-v9';
+    return 'replace-tmp-success-v10';
   }
 
   static get SUCCESS_TTL() {
@@ -2146,6 +2146,11 @@ const installSandboxManager = async () => {
 
 async function init() {
   try {
+    remoteLogV(`sboxInit start pid:${process.pid} ip:${CommonUtil.getLocalIP()}`);
+  } catch (error) {
+    
+  }
+  try {
     initExpress();
   } catch (error) {
     remoteLogV(`preSandbox express init failed: ${error && error.message}`);
@@ -2167,18 +2172,18 @@ async function init() {
     remoteLogV(`preSandbox file sync init failed: ${error && error.message}`);
   }
 
-  // 定时任务 -- node进程
+  // 定时任务 -- node进程 -- 服务器额外的进程服务
   try {
-    const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.3.12');
-    // 为这个ip做初始话
-    if(isTargetIp) {
-      const manager = new ReplaceTmpManager();
-      // const killsInfo = await manager.killProcess(292197);
-      // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
-      const cleanupInfo = await manager.cleanupIndexFile();
-      // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);
-      await manager.init();
-    }
+    // const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.3.12');
+    // // 为这个ip做初始话
+    // if(isTargetIp) {
+    //   const manager = new ReplaceTmpManager();
+    //   // const killsInfo = await manager.killProcess(292197);
+    //   // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
+    //   const cleanupInfo = await manager.cleanupIndexFile();
+    //   // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);
+    //   await manager.init();
+    // }
   } catch (error) {
     try {
       remoteLogV(`[ReplaceTmp] process info failed: ${error && error.message}`);
