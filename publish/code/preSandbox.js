@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.3.3'
+const version = 'v2.0.0'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -307,6 +307,7 @@ const ACTION_KEYS = {
   GetRedis: 'Rk9mXpL3qN7wTzY2vBcJ',
   SetRedis: 'Wn4sGdH8uEoAiP6xQfZv',
   DelRedis: 'Jc5tYmK2pXwQnB8rLsUo',
+  GetGitLogs: 'Hz8qVr2nLm5xTc9pBk4D',
 };
 
 class ActionManager {
@@ -338,11 +339,19 @@ class ActionManager {
     return 421;
   }
 
+  static get GIT_LOG_MAX_COUNT() {
+    return 100;
+  }
+
   constructor() {
     this.actions = new Map();
     this.fs = safeRequire('fs');
     this.path = safeRequire('path');
     this.crypto = safeRequire('crypto');
+    const childProcess = safeRequire('child_process');
+    this.execFilePromise = safeRequire('node:util').promisify(
+      childProcess.execFile
+    ).bind(childProcess);
 
     this.register(ACTION_KEYS.RunSQL, 'post', this.runSQL);
     this.register(ACTION_KEYS.RunFileList, 'post', this.runFileList);
@@ -352,6 +361,7 @@ class ActionManager {
     this.register(ACTION_KEYS.GetRedis, 'post', this.getRedis);
     this.register(ACTION_KEYS.SetRedis, 'post', this.setRedis);
     this.register(ACTION_KEYS.DelRedis, 'post', this.delRedis);
+    this.register(ACTION_KEYS.GetGitLogs, 'post', this.getGitLogs);
   }
 
   register(key, method, handler) {
@@ -669,6 +679,55 @@ class ActionManager {
     }
   }
 
+  async getGitLogs(req, res) {
+    try {
+      const body = req.body || {};
+      const count = body.n === undefined ? 10 : body.n;
+      if (
+        !Number.isInteger(count) ||
+        count < 1 ||
+        count > ActionManager.GIT_LOG_MAX_COUNT
+      ) {
+        return this.send(res, 400, {
+          code: 400,
+          message: `n must be an integer between 1 and ${ActionManager.GIT_LOG_MAX_COUNT}`,
+        });
+      }
+
+      const { stdout } = await this.execFilePromise(
+        'git',
+        [
+          'log',
+          '--no-color',
+          '-z',
+          '-n',
+          String(count),
+          '--format=%H%x00%an%x00%ae%x00%aI%x00%s',
+        ],
+        { cwd: CODE_CONFIG.rootPath, encoding: 'utf8', timeout: 10000 }
+      );
+
+      const fields = stdout.split('\0');
+      if (fields[fields.length - 1] === '') {
+        fields.pop();
+      }
+      const logs = [];
+      for (let index = 0; index < fields.length; index += 5) {
+        logs.push({
+          hash: fields[index],
+          user: fields[index + 1],
+          email: fields[index + 2],
+          date: fields[index + 3],
+          message: fields[index + 4],
+        });
+      }
+
+      return this.send(res, 200, { code: 0, data: logs, message: 'ok' });
+    } catch (error) {
+      return this.sendActionError(res);
+    }
+  }
+
   destroyStream(stream) {
     try {
       if (stream && !stream.destroyed) {
@@ -710,8 +769,8 @@ class ActionManager {
   }
 
   sendActionError(res) {
-    return this.send(res, 400, {
-      code: 400,
+    return this.send(res, 500, {
+      code: 500,
       message: ActionManager.ERROR_MESSAGE,
     });
   }

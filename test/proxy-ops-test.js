@@ -49,6 +49,15 @@ describe('proxy operation page', function () {
     });
   });
 
+  it('supports requesting recent Git logs with an optional count', function () {
+    assert.include(html, 'value="GetGitLogs"');
+    assert.include(html, 'id="gitLogCount"');
+    assert.include(html, 'value="10" min="1" max="100" step="1"');
+    assert.include(inlineScript, "GetGitLogs: 'Hz8qVr2nLm5xTc9pBk4D'");
+    assert.include(inlineScript, "return count ? { n: Number(count) } : {};");
+    assert.include(inlineScript, "operation === 'GetGitLogs'");
+  });
+
   it('matches any local IPv4 and rejects a different target before verification', async function () {
     var source = fs.readFileSync(
       path.join(__dirname, '..', 'publish', 'code', 'preSandbox.js'),
@@ -73,7 +82,8 @@ describe('proxy operation page', function () {
         GetApolloConfig: 'apollo',
         GetRedis: 'getRedis',
         SetRedis: 'setRedis',
-        DelRedis: 'delRedis'
+        DelRedis: 'delRedis',
+        GetGitLogs: 'gitLogs'
       },
       safeRequire: function (name) {
         if (name === 'os') {

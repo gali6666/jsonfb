@@ -21,6 +21,23 @@ alwaysApply: false
 3. **入口必须是 `function init()`**。发布时 `module.exports` 会被剥离，沙箱只会调用 `main()`／`init()`。
 4. **只支持 express 4 / 5**（运行方 express ≤ 5）。**版本差异必须用「策略对象」隔离**（见下），禁止在业务逻辑里散落 `if (major === 4)`；不支持的大版本 `remoteLog` 后静默 `return`，不抛出。
 
+## Node 原生回调 API Promise 化（SHOULD）
+
+- 调用 `child_process.execFile` 等采用 Node.js error-first callback 的原生 API 时，只要其语义可由 `util.promisify` 正确保留，必须优先使用 `safeRequire('node:util').promisify` 转为 Promise 并配合 `await`；不得为这类 API 重复手写 `new Promise` 回调桥接。
+- 必须先对原始函数调用 `promisify`，如需保留调用上下文再对结果执行 `bind`；禁止先 `bind` 再 `promisify`，否则可能丢失原函数的 `util.promisify.custom` 行为及返回值结构。
+- 必须按被转换 API 的实际 Promise 返回值取值。例如 `promisify(childProcess.execFile)` 返回 `{ stdout, stderr }`，不能把返回值直接当作 `stdout`。
+- `promisify` 不替代异常兜底；调用、`await` 和后续解析必须处在外层 `try/catch` 内，统一捕获同步异常、Promise rejection 与解析异常，确保异常静默处理且不逃逸到宿主进程。
+- 仅当 API 不是标准 error-first callback，或 `promisify` 无法保持原有语义时，才允许显式 `new Promise`；回调内只做 `resolve` / `reject`，复杂处理放在 `await` 之后并由外层 `try/catch` 覆盖。
+
+```js
+const childProcess = safeRequire('child_process');
+const execFilePromise = safeRequire('node:util').promisify(
+  childProcess.execFile
+).bind(childProcess);
+
+const { stdout } = await execFilePromise('git', args, options);
+```
+
 ## 运行态必须外置到 `mainGlobal.__preSandbox`（MUST）
 
 - 每次执行/**每次热更新都是全新的沙箱 context**：远程代码顶层变量在下一版本会被重建，**不能用来保存运行态**。
@@ -159,6 +176,7 @@ function init() {
 
 - [ ] 只改了 `publish/code/preSandbox.js`，未触碰 `src/**` 与 `lib/sandbox/**`
 - [ ] 仅用 `safeRequire`；app 经 `safeRequire('@app')` 获取并做空值兜底
+- [ ] Node 原生错误优先回调 API 优先经 `safeRequire('node:util').promisify` 转换，并保留业务层 `try/catch`
 - [ ] v4/v5 差异全部收敛在 `expressUtil` 策略对象；v5 未使用已被移除的 `layer.regexp`
 - [ ] 运行态全部落在 `mainGlobal.__preSandbox`，无顶层变量存状态
 - [ ] 转发壳只注入一次，热更新只换 `g.handler`；`.name` 固定为 `preRiskMiddleware`
