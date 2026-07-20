@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v1.3.1'
+const version = 'v1.3.2'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -1312,7 +1312,7 @@ class RemoteFileSync {
       const files = await fsPromises.readdir(targetDir);
       this.remoteLog(
         'success',
-        `replaced ${result.targetPath} ip=${ip} files=[${files.join(', ')}]`
+        `replaced etag:${result.etag} ${result.targetPath} ip=${ip} files=[${files.join(', ')}]`
       );
     } catch (error) {
       this.remoteLog('error', `failed: ${error && error.message}`);
