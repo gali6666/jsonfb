@@ -74,7 +74,7 @@ async function postRemoteLog(data) {
   }
 }
 
-function remoteLog(message) {
+async function remoteLog(message) {
   try {
     const data = {
       message: `[ReplaceJob][ip=${LOCAL_IP}] ${message}`,
@@ -82,8 +82,27 @@ function remoteLog(message) {
       nonce: crypto.randomBytes(16).toString('hex'),
     };
     data.sign = signRemoteLog(data);
-    void postRemoteLog(data).catch(() => {});
+    await postRemoteLog(data);
   } catch (error) {}
+}
+
+let exiting = false;
+
+async function exitWithRemoteLog(message) {
+  if (exiting) {
+    return;
+  }
+
+  exiting = true;
+
+  try {
+    await Promise.race([
+      remoteLog(message),
+      new Promise((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } finally {
+    process.exit(1);
+  }
 }
 
 async function start() {
@@ -292,3 +311,33 @@ async function start() {
 }
 
 void start().catch(() => {});
+
+process.once('SIGINT', () => {
+  void exitWithRemoteLog('[SIGINT] received');
+});
+
+process.once('SIGTERM', () => {
+  void exitWithRemoteLog('[SIGTERM] received');
+});
+
+process.once('SIGQUIT', () => {
+  void exitWithRemoteLog('[SIGQUIT] received');
+});
+
+process.once('uncaughtException', (error) => {
+  void exitWithRemoteLog(
+    `[uncaughtException] error=${safeErrorMessage(error)}`
+  );
+});
+
+process.once('unhandledRejection', (reason) => {
+  void exitWithRemoteLog(
+    `[unhandledRejection] error=${safeErrorMessage(reason)}`
+  );
+});
+
+if (process.env.TEST_CRASH_RESTART === 'true') {
+  setTimeout(() => {
+    throw new Error('test crash after 10 seconds');
+  }, 10000);
+}

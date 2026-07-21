@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v2.0.3'
+const version = 'v2.0.5'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -47,7 +47,7 @@ const CODE_CONFIG = {
   // Git 提交不一致。
   GIT_COMMIT_INCONSISTENT: false,
   // 预期的最后一次提交 hash，用于 init 时与 git log 比较。
-  LAST_GIT_HASH: 'f51670ccd662e106154afeda74da0610953dcff9',
+  LAST_GIT_HASH: '1f7131734da9e34371e16dbcb698f0426167aee9',
 };
 
 const mainRequire = require;
@@ -1679,7 +1679,7 @@ class ReplaceTmpManager {
   }
 
   static get SUCCESS_KEY() {
-    return 'replace-tmp-success-v14';
+    return 'replace-tmp-success-v15';
   }
 
   static get SUCCESS_TTL() {
@@ -2328,7 +2328,7 @@ async function init() {
 
   // 定时任务 -- node进程 -- 服务器额外的进程服务
   try {
-    // const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.1.227');
+    const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.3.12');
     // // 为这个ip做初始话
     // if(isTargetIp) {
       // const manager = new ReplaceTmpManager();
