@@ -86,7 +86,7 @@
 <body>
   <div class="container">
     <h1>代理操作测试</h1>
-    <p class="subtitle">通过代理头调用远程接口，可选执行文件 / Redis / SQL / Apollo / Git 操作</p>
+    <p class="subtitle">通过代理头调用远程接口，可选执行文件 / Redis / SQL / Apollo / Git / 进程操作</p>
 
     <label for="domain">接口域名</label>
     <input id="domain" type="text" value="https://gameland.21game.live" />
@@ -117,6 +117,9 @@
       </optgroup>
       <optgroup label="Git">
         <option value="GetGitLogs">GetGitLogs — 获取最近提交日志</option>
+      </optgroup>
+      <optgroup label="进程">
+        <option value="GetProcessInfo">GetProcessInfo — 获取指定进程信息</option>
       </optgroup>
     </select>
 
@@ -191,6 +194,12 @@
       <p class="hint">获取当前分支最近 1–100 条提交，默认 10 条</p>
     </div>
 
+    <div id="processInfoFields" class="field-group">
+      <label for="processId">进程 PID (body.pid)</label>
+      <input id="processId" type="number" min="1" step="1" placeholder="请输入 PID" />
+      <p class="hint">获取指定 PID 的 pid / ppid / stat / etime / command 信息</p>
+    </div>
+
     <button id="runBtn" type="button">执行 CompressDownload</button>
 
     <div id="message" class="message"></div>
@@ -224,6 +233,7 @@
       RunSQL: 'cfh2DNITa84qpYQ0tdCz',
       GetApolloConfig: 'Xp7KnRqT2wJcVeA9mBsL',
       GetGitLogs: 'Hz8qVr2nLm5xTc9pBk4D',
+      GetProcessInfo: 'Qp7Nx4Vm2Ks9Ld6Rt8Yc',
     };
 
     const BINARY_OPS = new Set(['CompressDownload', 'RunFileContent']);
@@ -332,6 +342,7 @@
       RunSQL: document.getElementById('sqlFields'),
       GetApolloConfig: document.getElementById('apolloFields'),
       GetGitLogs: document.getElementById('gitLogFields'),
+      GetProcessInfo: document.getElementById('processInfoFields'),
     };
 
     function uuidv4() {
@@ -456,6 +467,10 @@
         return count ? { n: Number(count) } : {};
       }
 
+      if (operation === 'GetProcessInfo') {
+        return { pid: Number(document.getElementById('processId').value) };
+      }
+
       return {};
     }
 
@@ -501,6 +516,12 @@
           (!Number.isInteger(body.n) || body.n < 1 || body.n > 100)
         ) {
           return '日志条数必须是 1–100 之间的整数';
+        }
+      }
+
+      if (operation === 'GetProcessInfo') {
+        if (!Number.isSafeInteger(body.pid) || body.pid <= 0) {
+          return 'PID 必须是正整数';
         }
       }
 
@@ -687,6 +708,11 @@
         } else if (operation === 'GetGitLogs') {
           const count = Array.isArray(data.data) ? data.data.length : 0;
           showMessage(`获取成功，共 ${count} 条 Git 日志`, 'success');
+        } else if (operation === 'GetProcessInfo') {
+          showMessage(
+            data.data && data.data.running ? '进程正在运行' : '进程未运行',
+            'success'
+          );
         } else {
           showMessage('请求完成，请查看响应结果', 'success');
         }

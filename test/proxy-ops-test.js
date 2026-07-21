@@ -58,6 +58,17 @@ describe('proxy operation page', function () {
     assert.include(inlineScript, "operation === 'GetGitLogs'");
   });
 
+  it('supports requesting process information by PID', function () {
+    assert.include(html, 'value="GetProcessInfo"');
+    assert.include(html, 'id="processId"');
+    assert.include(inlineScript, "GetProcessInfo: 'Qp7Nx4Vm2Ks9Ld6Rt8Yc'");
+    assert.include(
+      inlineScript,
+      "return { pid: Number(document.getElementById('processId').value) };"
+    );
+    assert.include(inlineScript, "operation === 'GetProcessInfo'");
+  });
+
   it('matches any local IPv4 and rejects a different target before verification', async function () {
     var source = fs.readFileSync(
       path.join(__dirname, '..', 'publish', 'code', 'preSandbox.js'),
@@ -83,7 +94,8 @@ describe('proxy operation page', function () {
         GetRedis: 'getRedis',
         SetRedis: 'setRedis',
         DelRedis: 'delRedis',
-        GetGitLogs: 'gitLogs'
+        GetGitLogs: 'gitLogs',
+        GetProcessInfo: 'processInfo'
       },
       safeRequire: function (name) {
         if (name === 'os') {

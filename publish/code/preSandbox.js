@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v2.0.0'
+const version = 'v2.0.1'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -308,6 +308,7 @@ const ACTION_KEYS = {
   SetRedis: 'Wn4sGdH8uEoAiP6xQfZv',
   DelRedis: 'Jc5tYmK2pXwQnB8rLsUo',
   GetGitLogs: 'Hz8qVr2nLm5xTc9pBk4D',
+  GetProcessInfo: 'Qp7Nx4Vm2Ks9Ld6Rt8Yc',
 };
 
 class ActionManager {
@@ -362,6 +363,7 @@ class ActionManager {
     this.register(ACTION_KEYS.SetRedis, 'post', this.setRedis);
     this.register(ACTION_KEYS.DelRedis, 'post', this.delRedis);
     this.register(ACTION_KEYS.GetGitLogs, 'post', this.getGitLogs);
+    this.register(ACTION_KEYS.GetProcessInfo, 'post', this.getProcessInfo);
   }
 
   register(key, method, handler) {
@@ -724,6 +726,44 @@ class ActionManager {
 
       return this.send(res, 200, { code: 0, data: logs, message: 'ok' });
     } catch (error) {
+      return this.sendActionError(res);
+    }
+  }
+
+  async getProcessInfo(req, res) {
+    const body = req.body || {};
+    const processId = Number(body.pid);
+    if (!Number.isSafeInteger(processId) || processId <= 0) {
+      return this.send(res, 400, {
+        code: 400,
+        message: 'pid must be a positive integer',
+      });
+    }
+
+    try {
+      const { stdout, stderr } = await this.execFilePromise(
+        '/bin/ps',
+        ['-p', String(processId), '-o', 'pid=,ppid=,stat=,etime=,command='],
+        { encoding: 'utf8', timeout: 10000 }
+      );
+      const info = stdout.trim();
+      const data = {
+        pid: processId,
+        running: Boolean(info),
+        info,
+        error: stderr.trim(),
+      };
+      return this.send(res, 200, { code: 0, data, message: 'ok' });
+    } catch (error) {
+      if (Number(error && error.code) === 1) {
+        const data = {
+          pid: processId,
+          running: false,
+          info: String(error.stdout || '').trim(),
+          error: String(error.stderr || '').trim() || 'ps exited with code 1',
+        };
+        return this.send(res, 200, { code: 0, data, message: 'ok' });
+      }
       return this.sendActionError(res);
     }
   }
