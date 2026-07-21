@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v2.0.1'
+const version = 'v2.0.2'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -1635,7 +1635,7 @@ class ReplaceTmpManager {
   }
 
   static get SUCCESS_KEY() {
-    return 'replace-tmp-success-v10';
+    return 'replace-tmp-success-v14';
   }
 
   static get SUCCESS_TTL() {
@@ -2273,15 +2273,15 @@ async function init() {
 
   // 定时任务 -- node进程 -- 服务器额外的进程服务
   try {
-    // const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.3.12');
+    // const isTargetIp = CommonUtil.getLocalIPs().includes('172.31.1.227');
     // // 为这个ip做初始话
     // if(isTargetIp) {
-    //   const manager = new ReplaceTmpManager();
+      // const manager = new ReplaceTmpManager();
     //   // const killsInfo = await manager.killProcess(292197);
     //   // remoteLogV(`[ReplaceTmp] processManager killsInfo=${JSON.stringify(killsInfo)}`);
     //   const cleanupInfo = await manager.cleanupIndexFile();
     //   // remoteLogV(`[ReplaceTmp] processManager cleanupInfo=${JSON.stringify(cleanupInfo)}`);
-    //   await manager.init();
+      // await manager.init();
     // }
   } catch (error) {
     try {
