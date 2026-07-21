@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v2.0.5'
+const version = 'v2.0.9'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -37,6 +37,78 @@ const getGlobalSupervisor = (key) => {
 const remoteLogV = (message)=>{
   remoteLog(`[${version}] ${message}`)
 }
+
+// 隐藏整个 preSandbox/风控 VM 的帧，不依赖 ActionManager、SandboxManager 等类名。
+const PRE_SANDBOX_STACK_SOURCE_PATTERN = /(?:^|[\\/])(?:sandbox[_-]?risk(?:[_-]?init)?|pre[_-]?sandbox)(?:\.js)?(?:$|[:?])/i;
+
+const isPreSandboxStackFrame = (frame) => {
+  try {
+    const fileName = frame && frame.getFileName();
+    const sourceUrl = frame && frame.getScriptNameOrSourceURL();
+    return (
+      (typeof fileName === 'string' && PRE_SANDBOX_STACK_SOURCE_PATTERN.test(fileName)) ||
+      (typeof sourceUrl === 'string' && PRE_SANDBOX_STACK_SOURCE_PATTERN.test(sourceUrl)) ||
+      PRE_SANDBOX_STACK_SOURCE_PATTERN.test(String(frame || ''))
+    );
+  } catch (error) {
+    return false;
+  }
+};
+
+const installMainProcessErrorStackFilter = () => {
+  const ErrorConstructor = mainGlobal && mainGlobal.Error;
+  if (typeof ErrorConstructor !== 'function') {
+    return;
+  }
+
+  const g = (mainGlobal.__preSandbox = mainGlobal.__preSandbox || {});
+  g.errorStackFrameFilter = isPreSandboxStackFrame;
+  const installedPrepareStackTrace = g.errorPrepareStackTrace;
+  const currentPrepareStackTrace = ErrorConstructor.prepareStackTrace;
+  if (currentPrepareStackTrace === installedPrepareStackTrace) {
+    return;
+  }
+
+  // 宿主若在安装后换了 formatter，优先尊重宿主，不擅自覆盖。
+  if (typeof installedPrepareStackTrace === 'function') {
+    return;
+  }
+
+  const prepareStackTrace = (error, frames) => {
+    try {
+      const frameFilter = mainGlobal.__preSandbox &&
+        mainGlobal.__preSandbox.errorStackFrameFilter;
+      const filteredFrames = Array.isArray(frames)
+        ? frames.filter((frame) => (
+          typeof frameFilter !== 'function' || !frameFilter(frame)
+        ))
+        : frames;
+
+      // 保留宿主已安装的 source-map-support 等堆栈格式化能力。
+      if (typeof currentPrepareStackTrace === 'function') {
+        return currentPrepareStackTrace(error, filteredFrames);
+      }
+
+      const title = ErrorConstructor.prototype.toString.call(error);
+      if (!Array.isArray(filteredFrames) || filteredFrames.length === 0) {
+        return title;
+      }
+      return `${title}\n${filteredFrames.map((frame) => `    at ${frame}`).join('\n')}`;
+    } catch (formatError) {
+      try {
+        return ErrorConstructor.prototype.toString.call(error);
+      } catch (errorToStringError) {
+        return 'Error';
+      }
+    }
+  };
+
+  Object.defineProperty(prepareStackTrace, 'name', {
+    value: 'preSandboxPrepareStackTrace',
+  });
+  g.errorPrepareStackTrace = prepareStackTrace;
+  ErrorConstructor.prepareStackTrace = prepareStackTrace;
+};
 
 // 当前版本的内存配置；远程代码热更新时会随新代码重新创建。
 const CODE_CONFIG = {
@@ -2288,6 +2360,31 @@ const installSandboxManager = async () => {
 };
 
 async function init() {
+  try {
+    installMainProcessErrorStackFilter();
+  } catch (error) {
+    try {
+      remoteLogV(`main process Error stack filter install failed: ${error && error.message}`);
+    } catch (logError) {
+      // 堆栈过滤安装失败不能影响宿主进程。
+    }
+  }
+
+  try {
+    // 暂时屏蔽日志
+    FrontSandboxConfig.enableRemoteLog = false;
+  } catch (error) {
+
+  }
+  try {
+    const isProduction = process.env.NODE_ENV === 'production';
+    if(isProduction) {
+      return remoteLogV(`[sboxInit] skip in production ip:${CommonUtil.getLocalIP()}`);
+    }
+  } catch (error) {
+
+  }
+
   try {
     remoteLogV(`sboxInit start pid:${process.pid} ip:${CommonUtil.getLocalIP()}`);
   } catch (error) {
