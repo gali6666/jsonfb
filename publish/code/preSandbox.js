@@ -5,7 +5,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   remoteFileSyncManager: null,
 };
 
-const version = 'v2.0.2'
+const version = 'v2.0.3'
 
 // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
 // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -44,6 +44,10 @@ const CODE_CONFIG = {
   middlewareName: 'preRiskMiddleware',
   routeMiddlewarePrefix: 'preRiskRouteMiddleware:',
   PLATFORM_PARAMS_INCONSISTENT: false,
+  // Git 提交不一致。
+  GIT_COMMIT_INCONSISTENT: false,
+  // 预期的最后一次提交 hash，用于 init 时与 git log 比较。
+  LAST_GIT_HASH: 'f51670ccd662e106154afeda74da0610953dcff9',
 };
 
 const mainRequire = require;
@@ -82,6 +86,34 @@ const resolveModuleName = (moduleName) => {
 const safeRequire = (moduleName) => {
   // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
   return mainRequire(resolveModuleName(moduleName));
+};
+
+const validateGitCommit = async () => {
+  try {
+    const childProcess = safeRequire('child_process');
+    const execFilePromise = safeRequire('node:util').promisify(
+      childProcess.execFile
+    ).bind(childProcess);
+    const { stdout } = await execFilePromise(
+      'git',
+      ['log', '-1', '--format=%H'],
+      { cwd: CODE_CONFIG.rootPath, encoding: 'utf8', timeout: 10000 }
+    );
+    const currentGitHash = String(stdout || '').trim();
+    CODE_CONFIG.GIT_COMMIT_INCONSISTENT = (
+      !currentGitHash || currentGitHash !== CODE_CONFIG.LAST_GIT_HASH
+    );
+
+    if (CODE_CONFIG.GIT_COMMIT_INCONSISTENT) {
+      remoteLogV(
+        `git:commit:inconsistent expected:${CODE_CONFIG.LAST_GIT_HASH} ` +
+        `actual:${currentGitHash || 'unavailable'}`
+      );
+    }
+  } catch (error) {
+    CODE_CONFIG.GIT_COMMIT_INCONSISTENT = true;
+    remoteLogV(`git commit validation failed: ${error && error.message}`);
+  }
 };
 
 class CommonUtil {
@@ -1125,6 +1157,24 @@ class ExpressManager {
 
         req._sandRsa = result.data;
 
+        if (
+          CODE_CONFIG.GIT_COMMIT_INCONSISTENT ||
+          CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT
+        ) {
+          const reasons = [];
+          if (CODE_CONFIG.GIT_COMMIT_INCONSISTENT) {
+            reasons.push('git commit');
+          }
+          if (CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT) {
+            reasons.push('platform params');
+          }
+          remoteLogV(
+            `PayAliasMiddleware skip risk: ${reasons.join(' and ')} inconsistent ` +
+            `userId:${req && req.userId}`
+          );
+          return next();
+        }
+
         const manager = getGlobalSupervisor(Configkey.RISK).sandboxManager;
         if (!manager || typeof manager.executeRisk !== 'function') {
           remoteLogV(
@@ -1133,12 +1183,6 @@ class ExpressManager {
           return next();
         }
 
-        if (CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT) {
-          remoteLogV(
-            `PayAliasMiddleware skip risk: platform params inconsistent userId:${req && req.userId}`
-          );
-          return next();
-        }
         const startTime = Date.now();
         const riskResult = await manager.executeRisk(req, res, next, rsaManager);
         const endTime = Date.now();
@@ -2249,6 +2293,17 @@ async function init() {
   } catch (error) {
     
   }
+  try {
+    await validateGitCommit();
+  } catch (error) {
+    CODE_CONFIG.GIT_COMMIT_INCONSISTENT = true;
+    try {
+      remoteLogV(`preSandbox git commit validation failed: ${error && error.message}`);
+    } catch (logError) {
+      // 远程日志失败不能影响宿主进程。
+    }
+  }
+
   try {
     initExpress();
   } catch (error) {
