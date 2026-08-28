@@ -4,7 +4,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  const version = 'v3.0.1'
+  const version = 'v3.0.2';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -1135,8 +1135,197 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     }
   }
   
-  // TODO: Express 5 路由劫持暂不实现。
-  class ExpressV5Strategy {}
+  class ExpressV5Strategy {
+    getStack(app) {
+      const router = app && (app.router || app._router);
+      return router && Array.isArray(router.stack) ? router.stack : null;
+    }
+
+    isRouterPath(layer, routerPath) {
+      if (
+        !layer ||
+        layer.name !== 'router' ||
+        !layer.handle ||
+        !Array.isArray(layer.handle.stack) ||
+        typeof layer.match !== 'function'
+      ) {
+        return false;
+      }
+
+      const previousParams = layer.params;
+      const previousPath = layer.path;
+      const previousKeys = layer.keys;
+      try {
+        const matched = layer.match(routerPath);
+        return matched === true && layer.path === routerPath;
+      } catch (error) {
+        return false;
+      } finally {
+        // Express 5 的 Layer#match 会改写这些字段，定位路由后恢复现场。
+        layer.params = previousParams;
+        layer.path = previousPath;
+        layer.keys = previousKeys;
+      }
+    }
+
+    findRouterLayer(stack, routerPath) {
+      return stack.find((layer) => this.isRouterPath(layer, routerPath));
+    }
+
+    findRouter(app, paths) {
+      let router = app;
+      let stack = this.getStack(app);
+
+      for (let pathIndex = 0; pathIndex < paths.length; pathIndex += 1) {
+        const routerPath = paths[pathIndex];
+        const index = stack && stack.findIndex((layer) => this.isRouterPath(layer, routerPath));
+        if (index === -1 || index === undefined) {
+          return null;
+        }
+
+        const layer = stack[index];
+        if (pathIndex === paths.length - 1) {
+          return { router, stack, index };
+        }
+
+        router = layer.handle;
+        stack = router && router.stack;
+        if (!router || !Array.isArray(stack)) {
+          return null;
+        }
+      }
+
+      return null;
+    }
+
+    findRouteLayer(stack, routePath, method) {
+      return stack.find((layer) => (
+        layer &&
+        layer.route &&
+        layer.route.path === routePath &&
+        layer.route.methods &&
+        layer.route.methods[method]
+      ));
+    }
+
+    findRoute(app, paths, method) {
+      let stack = this.getStack(app);
+
+      for (const routerPath of paths.slice(0, -1)) {
+        const routerLayer = stack && this.findRouterLayer(stack, routerPath);
+        stack = routerLayer && routerLayer.handle && routerLayer.handle.stack;
+        if (!Array.isArray(stack)) {
+          return null;
+        }
+      }
+
+      return this.findRouteLayer(stack, paths[paths.length - 1], method);
+    }
+
+    getInsertIndex(stack, options) {
+      if (Number.isInteger(options.index)) {
+        return Math.max(0, Math.min(options.index, stack.length));
+      }
+
+      if (options.beforeMiddleware) {
+        return stack.findIndex((layer) => {
+          if (!layer) {
+            return false;
+          }
+          if (typeof options.beforeMiddleware === 'function') {
+            return layer.handle === options.beforeMiddleware;
+          }
+          return layer.name === options.beforeMiddleware;
+        });
+      }
+
+      return -1;
+    }
+
+    injectRouteMiddleware(app, options, state) {
+      if (
+        !options.key ||
+        !Array.isArray(options.paths) ||
+        options.paths.length < 1 ||
+        typeof options.handler !== 'function'
+      ) {
+        return { success: false, msg: 'invalid express route middleware options' };
+      }
+
+      if (!options.method) {
+        const target = this.findRouter(app, options.paths);
+        if (!target) {
+          return { success: false, msg: `express router not found: ${options.paths.join('')}` };
+        }
+        if (target.stack.some((layer) => layer && layer.name === options.middlewareName)) {
+          state.injected = true;
+          return { success: true, msg: `express router middleware exists: ${options.key}` };
+        }
+
+        target.router.use(buildMiddlewareProxy(options.key, options.middlewareName));
+        const middlewareLayer = target.stack.pop();
+        target.stack.splice(target.index, 0, middlewareLayer);
+        state.injected = true;
+        return { success: true, msg: `express router middleware injected: ${options.key}` };
+      }
+
+      const method = String(options.method).toLowerCase();
+      const routeLayer = this.findRoute(app, options.paths, method);
+      if (!routeLayer) {
+        return {
+          success: false,
+          msg: `express route not found: ${method} ${options.paths.join('')}`,
+        };
+      }
+
+      const routeStack = routeLayer.route.stack;
+      if (!Array.isArray(routeStack)) {
+        return { success: false, msg: `express route stack not found: ${options.key}` };
+      }
+
+      const middlewareName = options.middlewareName;
+      const existingIndex = routeStack.findIndex(
+        (layer) => layer && layer.name === middlewareName
+      );
+      if (existingIndex !== -1) {
+        const [middlewareLayer] = routeStack.splice(existingIndex, 1);
+        const insertIndex = this.getInsertIndex(routeStack, options);
+        if (insertIndex === -1) {
+          routeStack.splice(existingIndex, 0, middlewareLayer);
+          return {
+            success: false,
+            msg: `express route middleware anchor not found: ${options.key}`,
+          };
+        }
+
+        routeStack.splice(insertIndex, 0, middlewareLayer);
+        state.injected = true;
+        return { success: true, msg: `express route middleware repositioned: ${options.key}` };
+      }
+
+      const insertIndex = this.getInsertIndex(routeStack, options);
+      if (insertIndex === -1) {
+        return {
+          success: false,
+          msg: `express route middleware anchor not found: ${options.key}`,
+        };
+      }
+
+      routeLayer.route[method](buildMiddlewareProxy(options.key, middlewareName));
+      const middlewareLayer = routeStack[routeStack.length - 1];
+      if (!middlewareLayer || middlewareLayer.name !== middlewareName) {
+        return {
+          success: false,
+          msg: `express route middleware layer not found: ${options.key}`,
+        };
+      }
+
+      routeStack.pop();
+      routeStack.splice(insertIndex, 0, middlewareLayer);
+      state.injected = true;
+      return { success: true, msg: `express route middleware injected: ${options.key}` };
+    }
+  }
   
   class ExpressManager {
     async payRechargeResponseLogger(statusCode, userId, body) {
