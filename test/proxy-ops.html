@@ -378,6 +378,7 @@
         'x-timestamp': String(timestamp),
         'x-request-id': requestId,
         'x-signature': sign,
+        'x-request-reason':'true'
       };
       if (targetIp) headers['x-target-ip'] = targetIp;
       return headers;
