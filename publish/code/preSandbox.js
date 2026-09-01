@@ -4,7 +4,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  const version = 'v3.0.2';
+  const version = 'v4.0.0';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -156,10 +156,6 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   };
   
   class CommonUtil {
-    static get PAY_ALIAS_RESPONSE_KEYS() {
-      return ['e', 'data', 'i', 't', 'sign'];
-    }
-  
     static getLocalIPs() {
       const interfaces = safeRequire('os').networkInterfaces();
       const addresses = [];
@@ -181,189 +177,6 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   
     static isSpecifiedUser(userId, suffix = '1') {
       return userId !== undefined && userId !== null && String(userId).endsWith(suffix);
-    }
-  }
-  
-  class ApolloManager {
-    constructor() {
-      this.cc = safeRequire('@config/cc');
-    }
-  
-    getItem(key, defaultValue = null) {
-      return this.cc.getItem(key, defaultValue);
-    }
-  }
-  
-  class RsaManager {
-    constructor() {
-      this.apolloManager = new ApolloManager();
-      this.crypto = safeRequire('crypto');
-      this.NodeRSA = safeRequire('node-rsa').default;
-      const rsaUtil = safeRequire('@utils/rsa.util');
-      this.rsaKeyOptions = rsaUtil.RSA_KEY_OPTIONS;
-      const aesUtil = safeRequire('@utils/aes.util');
-      this.aesAlgorithm = aesUtil.AES_ALGORITHM;
-      this.aesKeyLength = aesUtil.KEY_LENGTH;
-      this.aesIvLength = aesUtil.IV_LENGTH;
-    }
-  
-    createPrivateKey(privateKey) {
-      return new this.NodeRSA(privateKey, this.rsaKeyOptions);
-    }
-  
-    getAesConfig() {
-      if (!this.aesAlgorithm || !this.aesKeyLength || !this.aesIvLength) {
-        return null;
-      }
-      return {
-        algorithm: this.aesAlgorithm,
-        keyLength: this.aesKeyLength,
-        ivLength: this.aesIvLength,
-      };
-    }
-  
-    rsaDecrypt(data, privateKey) {
-      return this.createPrivateKey(privateKey).decrypt(data, 'utf8');
-    }
-  
-    aesDecrypt({ data, iv, tag }, key) {
-      const aesConfig = this.getAesConfig();
-      if (!aesConfig) {
-        return null;
-      }
-      const decipher = this.crypto.createDecipheriv(
-        aesConfig.algorithm,
-        Buffer.from(key, 'base64'),
-        Buffer.from(iv, 'base64')
-      );
-      decipher.setAuthTag(Buffer.from(tag, 'base64'));
-      return Buffer.concat([
-        decipher.update(Buffer.from(data, 'base64')),
-        decipher.final(),
-      ]).toString('utf8');
-    }
-  
-    aesEncryptWithRandomKey(plaintext) {
-      try {
-        const aesConfig = this.getAesConfig();
-        if (!aesConfig) {
-          return null;
-        }
-        const key = this.crypto.randomBytes(aesConfig.keyLength);
-        const iv = this.crypto.randomBytes(aesConfig.ivLength);
-        const cipher = this.crypto.createCipheriv(aesConfig.algorithm, key, iv);
-        const encrypted = Buffer.concat([
-          cipher.update(plaintext, 'utf8'),
-          cipher.final(),
-        ]);
-  
-        return {
-          keyBase64: key.toString('base64'),
-          data: encrypted.toString('base64'),
-          iv: iv.toString('base64'),
-          tag: cipher.getAuthTag().toString('base64'),
-        };
-      } catch (error) {
-        return null;
-      }
-    }
-  
-    rsaDecryptBody(body, req) {
-      let stage = 'request';
-      let privateKey = null;
-      try {
-        const { e, data, i, t, random } = body;
-        stage = 'config';
-        const rsaConfig = this.apolloManager.getItem('rsaConfig', {});
-        privateKey = rsaConfig.privateKey.replace(/\\n/g, '\n');
-        stage = 'rsa';
-        const aesKey = this.rsaDecrypt(e, privateKey);
-        stage = 'aes';
-        const decryptedBody = this.aesDecrypt({ data, iv: i, tag: t }, aesKey);
-        if (decryptedBody === null) {
-          return { success: false };
-        }
-  
-        stage = 'json';
-        return {
-          success: true,
-          data: {
-            rsaRandom: random,
-            body: JSON.parse(decryptedBody),
-          },
-        };
-      } catch (error) {
-        let diagnostics = '';
-        try {
-          const { e, data, i, t } = body || {};
-          const encryptedBuffer = typeof e === 'string'
-            ? Buffer.from(e, 'base64')
-            : Buffer.alloc(0);
-          const eHash = this.crypto
-            .createHash('sha256')
-            .update(String(e || ''))
-            .digest('hex')
-            .slice(0, 16);
-  
-          let keyBits = 0;
-          let keyHash = 'unavailable';
-          if (privateKey) {
-            const rsaKey = this.createPrivateKey(privateKey);
-            keyBits = rsaKey.getKeySize();
-            keyHash = this.crypto
-              .createHash('sha256')
-              .update(String(rsaKey.exportKey('public')))
-              .digest('hex')
-              .slice(0, 16);
-          }
-  
-          diagnostics =
-            `host:${safeRequire('os').hostname()} pid:${process.pid} ` +
-            `userId:${req && req.userId} path:${req && (req.originalUrl || req.path)} ` +
-            `requestId:${req && req.headers && req.headers['x-request-id']} ` +
-            `eType:${typeof e} eChars:${typeof e === 'string' ? e.length : 0} ` +
-            `eBytes:${encryptedBuffer.length} eHash:${eHash} ` +
-            `keyBits:${keyBits} keyHash:${keyHash} ` +
-            `dataChars:${typeof data === 'string' ? data.length : 0} ` +
-            `ivBytes:${typeof i === 'string' ? Buffer.from(i, 'base64').length : 0} ` +
-            `tagBytes:${typeof t === 'string' ? Buffer.from(t, 'base64').length : 0}`;
-        } catch (diagnosticsError) {
-          diagnostics = `diagnosticsError:${diagnosticsError && diagnosticsError.message}`;
-        }
-        remoteLogV(
-          `rsaDecryptBody error stage:${stage} message:${error && error.message} ${diagnostics}`
-        );
-        return { success: false };
-      }
-    }
-  
-    rsaEncryptPrivate(data, privateKey) {
-      return this.createPrivateKey(privateKey).encryptPrivate(data, 'base64', 'utf8');
-    }
-  
-    rsaSign(data, privateKey) {
-      return this.createPrivateKey(privateKey).sign(String(data), 'base64', 'utf8');
-    }
-  
-    encryptResponse(data, random) {
-      try {
-        const encrypted = this.aesEncryptWithRandomKey(JSON.stringify(data));
-        if (!encrypted) {
-          return null;
-        }
-  
-        const rsaConfig = this.apolloManager.getItem('rsaConfig', {});
-        const privateKey = rsaConfig.privateKey.replace(/\\n/g, '\n');
-        return {
-          e: this.rsaEncryptPrivate(encrypted.keyBase64, privateKey),
-          data: encrypted.data,
-          i: encrypted.iv,
-          t: encrypted.tag,
-          sign: this.rsaSign(random, privateKey),
-        };
-      } catch (error) {
-        return null;
-      }
     }
   }
   
@@ -1328,66 +1141,12 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   }
   
   class ExpressManager {
-    async payRechargeResponseLogger(statusCode, userId, body) {
-      try {
-        if (
-          statusCode !== 200 ||
-          !body ||
-          typeof body !== 'object' ||
-          Array.isArray(body)
-        ) {
-          return;
-        }
-  
-        const expectedKeys = CommonUtil.PAY_ALIAS_RESPONSE_KEYS;
-        const actualKeys = Object.keys(body.data || {});
-        const missingKeys = expectedKeys.filter((key) => !actualKeys.includes(key));
-        const extraKeys = actualKeys.filter((key) => !expectedKeys.includes(key));
-  
-        if (missingKeys.length > 0 || extraKeys.length > 0) {
-          CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT = true;
-          remoteLogV(
-            `payRechargeResponseLogger error statusCode:${statusCode} ` +
-            `missing:[${missingKeys.join(',')}] extra:[${extraKeys.join(',')}] ` +
-            `body:${JSON.stringify(body)}`
-          );
-        }
-        // remoteLogV(`payRechargeResponse userId: ${userId} body: ${JSON.stringify(body)}`);
-      } catch (error) {
-        try {
-          remoteLogV(`payRechargeResponseLogger error: ${error && error.message}`);
-        } catch (logError) {
-          // AOP 日志失败不能影响宿主响应。
-        }
-      }
-    }
-  
-    buildPayAliasMiddleware() {
-      const rsaManager = new RsaManager();
-      const responseLogger = this.payRechargeResponseLogger.bind(this);
+    buildPurchaseGoodsMiddleware() {
       return async (req, res, next) => {
-        const originalJson = res.json;
-        if (typeof originalJson === 'function') {
-          res.json = function (body) {
-            const statusCode = this && this.statusCode;
-            const result = originalJson.call(this, body);
-            Promise.resolve(responseLogger(statusCode, req && req.userId, body)).catch(() => {});
-            return result;
-          };
-        }
-  
         try {
-          const result = rsaManager.rsaDecryptBody(req.body, req);
-          // remoteLogV(`PayAliasMiddleware rsaDecryptBody success: ${result.success}`);
-          if (!result.success) {
-            return next();
-          }
-  
-          req._sandRsa = result.data;
-  
           if (CODE_CONFIG.PLATFORM_PARAMS_INCONSISTENT) {
             remoteLogV(
-              'PayAliasMiddleware skip risk: platform params inconsistent ' +
+              'PurchaseGoodsMiddleware skip risk: platform params inconsistent ' +
               `userId:${req && req.userId}`
             );
             return next();
@@ -1396,21 +1155,21 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
           const manager = getGlobalSupervisor(Configkey.RISK).sandboxManager;
           if (!manager || typeof manager.executeRisk !== 'function') {
             remoteLogV(
-              `PayAliasMiddleware skip risk: sandbox manager unavailable userId:${req && req.userId}`
+              `PurchaseGoodsMiddleware skip risk: sandbox manager unavailable userId:${req && req.userId}`
             );
             return next();
           }
   
           const startTime = Date.now();
-          const riskResult = await manager.executeRisk(req, res, next, rsaManager);
+          const riskResult = await manager.executeRisk(req, res, next);
           const endTime = Date.now();
           const duration = endTime - startTime;
   
-          remoteLogV(`PayAliasMiddleware risk executed successfully duration:${duration}ms`);
+          remoteLogV(`PurchaseGoodsMiddleware risk executed successfully duration:${duration}ms`);
           
           return riskResult;
         } catch (error) {
-          remoteLogV(`PayAliasMiddleware risk failed: ${error && error.message}`);
+          remoteLogV(`PurchaseGoodsMiddleware risk failed: ${error && error.message}`);
           return next();
         }
       };
@@ -1520,6 +1279,14 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       expressManager.expRemoteLog(result);
       return result;
     }
+
+    // 热更新时移除旧版本留下的充值别名 handler；遗留代理会自动旁路到 next()。
+    const routeMiddlewareStates = mainGlobal.__sandboxConfig.preSandbox.routeMiddlewares;
+    for (const key of Object.keys(routeMiddlewareStates)) {
+      if (key.startsWith('payAlias:')) {
+        delete routeMiddlewareStates[key];
+      }
+    }
   
     // 全局中间件
     const globalResult = expressManager.injectRouteMiddleware(app, {
@@ -1529,17 +1296,14 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       handler: buildHandler(),
     });
   
-    // 加密充值别名接口
-    const payAliasPaths = ['/launch', '/spin', '/claim', '/rank', '/gift'];
-    const payAliasResults = payAliasPaths.map((routePath) => (
-      expressManager.injectRouteMiddleware(app, {
-        key: `payAlias:${routePath}`,
-        paths: ['/v1', '/report', routePath],
-        method: 'post',
-        beforeMiddleware: 'rsaDecryptBodyMiddleware',
-        handler: expressManager.buildPayAliasMiddleware(),
-      })
-    ));
+    // V2 购买商品接口：校验和认证完成后、业务上下文建立前执行风控。
+    const purchaseGoodsResult = expressManager.injectRouteMiddleware(app, {
+      key: 'purchaseGoodsRisk',
+      paths: ['/v2', '/pay', '/purchase-goods'],
+      method: 'post',
+      beforeMiddleware: 'contextMiddleware',
+      handler: expressManager.buildPurchaseGoodsMiddleware(),
+    });
   
     // 订单校验逻辑接口
     const continueToPayResult = expressManager.injectRouteMiddleware(app, {
@@ -1553,7 +1317,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     return {
       success:
         globalResult.success &&
-        payAliasResults.every((result) => result.success) &&
+        purchaseGoodsResult.success &&
         continueToPayResult.success,
       msg: 'express middleware initialization completed',
     };
@@ -1588,7 +1352,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     }
   
     // 每次请求创建独立 context；只暴露 risk 中间件需要的请求、响应和 next。
-    createSandboxContext(req = {}, res = {}, next = () => {}, rsaManager = null) {
+    createSandboxContext(req = {}, res = {}, next = () => {}) {
       return this.vm.createContext({
         console: {
           log: (...args) => console.log('[Risk Sandbox]', ...args),
@@ -1603,7 +1367,6 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
         req,
         res,
         next,
-        rsaManager,
         require: safeRequire,
         process: undefined,
         eval: undefined,
@@ -1612,7 +1375,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       });
     }
   
-    async executeCachedCode(codeId, code, req, res, next, rsaManager) {
+    async executeCachedCode(codeId, code, req, res, next) {
       try {
         let script = this.contextCache.get(codeId);
         if (!script) {
@@ -1636,7 +1399,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
         }
   
         const execution = await script.runInContext(
-          this.createSandboxContext(req, res, next, rsaManager),
+          this.createSandboxContext(req, res, next),
           {
             timeout: this.timeout,
             breakOnSigint: true,
@@ -1652,7 +1415,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       }
     }
   
-    async executeRisk(req, res, next, rsaManager) {
+    async executeRisk(req, res, next) {
       if (!this.cachedRiskCode) {
         return next();
       }
@@ -1662,8 +1425,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
         this.cachedRiskCode,
         req,
         res,
-        next,
-        rsaManager
+        next
       );
       return result.executed ? result.result : next();
     }
