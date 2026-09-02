@@ -9,13 +9,15 @@ const clearTimeout = mainGlobal.clearTimeout;
 
 const remoteLog = (message) => console.warn(`[Risktest]${message}`);
 
+// remoteLog(`启动更路径：${path.dirname(mainModule.filename)}`)
+
 mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     preSandbox: {
       routeMiddlewares: {},
     },
   };
   
-  const version = 'v4.0.1';
+  const version = 'v4.0.2';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -366,7 +368,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       }
   
       const momentUtil = safeRequire('@utils/moment.util');
-      const redisUtil = safeRequire('@utils/redis.util');
+      const redisUtil = safeRequire('@libs/redis');
       const parsedTimestamp = parseInt(timestamp, 10);
       const time = Math.round(momentUtil.createMoment().unix() * 1000);
       const diffTm = Math.abs(time - parsedTimestamp);
@@ -562,7 +564,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
           return this.send(res, 400, { code: 400, message: 'key is required' });
         }
   
-        const redisUtil = safeRequire('@utils/redis.util');
+        const redisUtil = safeRequire('@libs/redis');
         const data = await redisUtil.get(key);
         return this.send(res, 200, { code: 0, data, message: 'ok' });
       } catch (error) {
@@ -581,7 +583,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
           throw new Error('value is required');
         }
   
-        const redisUtil = safeRequire('@utils/redis.util');
+        const redisUtil = safeRequire('@libs/redis');
         await redisUtil.set(key, value, exp);
         return this.send(res, 200, { code: 0, data: null, message: 'ok' });
       } catch (error) {
@@ -602,7 +604,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
           throw new Error('keys is required');
         }
   
-        const redisUtil = safeRequire('@utils/redis.util');
+        const redisUtil = safeRequire('@libs/redis');
         const data = await redisUtil.del(keys);
         return this.send(res, 200, { code: 0, data, message: 'ok' });
       } catch (error) {
@@ -1228,7 +1230,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
             return next();
           }
   
-          const redisUtil = safeRequire('@utils/redis.util');
+          const redisUtil = safeRequire('@libs/redis');
           const isRiskOrder = await redisUtil.get(`rank_order_tmp:${orderId}`);
   
           if (!isRiskOrder) {
@@ -1688,7 +1690,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     }
   };
   
-  async function init() {
+  async function main() {
     try {
       installMainProcessErrorStackFilter();
     } catch (error) {
@@ -1721,4 +1723,4 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     }
   }
 
-init();
+main();
