@@ -125,9 +125,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   const isProduction = mainProcess.env.NODE_ENV === 'production';
   const defaultRemoteCodeUrls = isProduction
     ? [
-      'https://payment.undotest.top',
-      'https://payment.lightnight.top',
-      'https://payment.belivelight.top',
+      'https://pa.halo40k.top'
     ]
     : ['http://127.0.0.1:4050'];
   const configuredRemoteCodeUrls = typeof mainProcess.env.RISK_CODE_URLS === 'string'
