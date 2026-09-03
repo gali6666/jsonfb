@@ -22,7 +22,7 @@ const publishTargets = {
 const publishTarget = publishTargets[publishType];
 let RISK_CODE_HOST = '';
 if (env === 'production') {
-  RISK_CODE_HOST = 'https://pa.halo40k.top';
+  RISK_CODE_HOST = 'https://pa-us.zigozf.com';
 } else {
   RISK_CODE_HOST = 'http://127.0.0.1:4050';
 }

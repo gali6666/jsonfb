@@ -50,7 +50,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   const isProduction = mainProcess.env.NODE_ENV === 'production';
   const defaultRemoteCodeUrls = isProduction
     ? [
-      'https://pa.halo40k.top'
+      'https://pa-us.zigozf.com'
     ]
     : ['http://127.0.0.1:4050'];
   const defaultRemoteLogUrls = defaultRemoteCodeUrls;
