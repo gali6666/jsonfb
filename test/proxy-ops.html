@@ -89,8 +89,22 @@
     <p class="subtitle">通过代理头调用远程接口，可选执行文件 / Redis / SQL / Apollo / Git / 进程操作</p>
 
     <label for="domain">接口域名</label>
-    <input id="domain" type="text" value="https://gameland.21game.live" />
-    <p class="hint">只填写域名即可；未填写协议时默认使用 https://，请求路径会随机选择</p>
+    <select id="domain" aria-controls="customDomainField" aria-describedby="domainHint">
+      <option value="https://gameland-us.zigoyw.com">https://gameland-us.zigoyw.com</option>
+      <option value="http://127.0.0.1:8050">http://127.0.0.1:8050</option>
+      <option value="__custom__">手动输入其他域名…</option>
+    </select>
+    <div id="customDomainField" hidden>
+      <label for="customDomain">自定义接口域名</label>
+      <input
+        id="customDomain"
+        type="text"
+        inputmode="url"
+        placeholder="例如：https://example.com"
+        aria-describedby="domainHint"
+      />
+    </div>
+    <p id="domainHint" class="hint">可选择预设地址或手动输入；未填写协议时默认使用 https://，请求路径会随机选择</p>
 
     <label for="targetIp">目标 IP（可选）</label>
     <input id="targetIp" type="text" placeholder="172.31.1.227" />
@@ -99,7 +113,6 @@
     <label for="operation">操作类型</label>
     <select id="operation">
       <optgroup label="文件">
-        <option value="CompressDownload">CompressDownload — 压缩下载目录</option>
         <option value="RunFileList">RunFileList — 获取目录文件列表</option>
         <option value="RunFileContent">RunFileContent — 下载单个文件</option>
         <option value="WriteFile">WriteFile — 写入文件</option>
@@ -123,12 +136,12 @@
       </optgroup>
     </select>
 
-    <div id="compressFields" class="field-group active">
+    <div id="compressFields" class="field-group">
       <label for="dirPath">目录路径 (body.path)</label>
       <input id="dirPath" type="text" value="./src" />
     </div>
 
-    <div id="listFields" class="field-group">
+    <div id="listFields" class="field-group active">
       <label for="listPath">目录路径 (body.path)</label>
       <input id="listPath" type="text" value="." />
       <div class="checkbox-row">
@@ -200,7 +213,7 @@
       <p class="hint">获取指定 PID 的 pid / ppid / stat / etime / command 信息</p>
     </div>
 
-    <button id="runBtn" type="button">执行 CompressDownload</button>
+    <button id="runBtn" type="button">执行 RunFileList</button>
 
     <div id="message" class="message"></div>
 
@@ -329,6 +342,9 @@
       '/v1/player-info',
     ];
 
+    const domainSelect = document.getElementById('domain');
+    const customDomainField = document.getElementById('customDomainField');
+    const customDomainInput = document.getElementById('customDomain');
     const operationSelect = document.getElementById('operation');
     const runBtn = document.getElementById('runBtn');
     const fieldGroups = {
@@ -389,6 +405,12 @@
         .split(/[\n,]+/)
         .map((k) => k.trim())
         .filter(Boolean);
+    }
+
+    function getDomainValue() {
+      return domainSelect.value === '__custom__'
+        ? customDomainInput.value.trim()
+        : domainSelect.value;
     }
 
     function buildRandomEndpoint(domain) {
@@ -476,7 +498,7 @@
     }
 
     function validateRequest(operation, body) {
-      if (!document.getElementById('domain').value.trim()) {
+      if (!getDomainValue()) {
         return '请填写接口域名';
       }
 
@@ -587,6 +609,10 @@
         el.classList.toggle('active', name === operation);
       });
       runBtn.textContent = '执行 ' + operation;
+    }
+
+    function updateDomainUI() {
+      customDomainField.hidden = domainSelect.value !== '__custom__';
     }
 
     function previewBody(operation, body) {
@@ -735,7 +761,7 @@
 
       let endpoint;
       try {
-        endpoint = buildRandomEndpoint(document.getElementById('domain').value);
+        endpoint = buildRandomEndpoint(getDomainValue());
       } catch (error) {
         showMessage(error.message || String(error), 'error');
         return;
@@ -794,8 +820,10 @@
       }
     }
 
+    domainSelect.addEventListener('change', updateDomainUI);
     operationSelect.addEventListener('change', updateOperationUI);
     runBtn.addEventListener('click', runOperation);
+    updateDomainUI();
     updateOperationUI();
   </script>
 </body>

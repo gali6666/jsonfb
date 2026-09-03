@@ -24,8 +24,8 @@ describe('proxy operation page', function () {
   });
 
   it('builds requests from a domain and a random v1 POST route', function () {
-    assert.include(html, 'id="domain"');
-    assert.include(html, 'value="https://gameland.21game.live"');
+    assert.include(html, '<select id="domain"');
+    assert.include(html, 'value="https://gameland-us.zigoyw.com"');
     assert.notInclude(html, 'id="endpoint"');
     assert.include(inlineScript, 'const baseUrl =');
     assert.include(
@@ -41,6 +41,33 @@ describe('proxy operation page', function () {
     }));
     assert.include(routes, '/v1/auth/login');
     assert.include(routes, '/v1/player-info');
+  });
+
+  it('offers domain presets while allowing manual input', function () {
+    var domainOptions = html.match(/<select id="domain"[^>]*>([\s\S]*?)<\/select>/)[1];
+    assert.include(
+      domainOptions,
+      '<option value="https://gameland-us.zigoyw.com">https://gameland-us.zigoyw.com</option>'
+    );
+    assert.include(
+      domainOptions,
+      '<option value="http://127.0.0.1:8050">http://127.0.0.1:8050</option>'
+    );
+    assert.include(domainOptions, '<option value="__custom__">手动输入其他域名…</option>');
+    assert.include(html, 'id="customDomainField" hidden');
+    assert.include(html, 'id="customDomain"');
+    assert.include(inlineScript, "domainSelect.value === '__custom__'");
+    assert.include(inlineScript, 'customDomainInput.value.trim()');
+    assert.include(inlineScript, "domainSelect.addEventListener('change', updateDomainUI)");
+    assert.include(inlineScript, 'buildRandomEndpoint(getDomainValue())');
+  });
+
+  it('defaults to RunFileList without offering CompressDownload', function () {
+    var operationOptions = html.match(/<select id="operation">([\s\S]*?)<\/select>/)[1];
+    assert.notInclude(html, '<option value="CompressDownload">');
+    assert.match(operationOptions, /^\s*<optgroup label="文件">\s*<option value="RunFileList">/);
+    assert.include(html, '<div id="listFields" class="field-group active">');
+    assert.include(html, '<button id="runBtn" type="button">执行 RunFileList</button>');
   });
 
   it('has valid inline JavaScript', function () {
