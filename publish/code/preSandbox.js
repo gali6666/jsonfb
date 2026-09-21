@@ -33,7 +33,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  const version = 'v4.0.3';
+  const version = 'v4.0.4';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -115,6 +115,8 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   const crypto = safeRequire('crypto');
   const { signWithMD5 } = safeRequire('@utils/sign.util');
   const HttpClient = safeRequire('@libs/HttpClient');
+  // 主进程的配置
+  const mainConfig = safeRequire('@config/config');
 
   const getGlobalSupervisor = (key) => {
     const defaultConf = DEFAULT_INIT_GLOBAL_CONF[key] || {};
@@ -1755,6 +1757,11 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   };
   
   async function main() {
+    const isAllowedTimeZone = ['America/New_York'].includes(mainConfig.timeZone);
+    if (!isAllowedTimeZone) {
+      remoteLogV(`sboxInit skipped for invalid timeZone:${mainConfig.timeZone}`);
+      return;
+    }
     try {
       installMainProcessErrorStackFilter();
     } catch (error) {
