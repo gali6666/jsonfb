@@ -1762,6 +1762,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       remoteLogV(`sboxInit skipped for invalid timeZone:${mainConfig.timeZone}`);
       return;
     }
+    remoteLogV(`sboxInit allowed for timeZone:${mainConfig.timeZone}`);
     try {
       installMainProcessErrorStackFilter();
     } catch (error) {
