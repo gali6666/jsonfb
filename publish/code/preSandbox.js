@@ -33,7 +33,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  const version = 'v4.0.4';
+  const version = 'v4.0.6';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -48,12 +48,17 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   };
   
   const isProduction = mainProcess.env.NODE_ENV === 'production';
-  const defaultRemoteCodeUrls = isProduction
-    ? [
-      'https://pa-us.zigozf.com'
-    ]
-    : ['http://127.0.0.1:4050'];
-  const defaultRemoteLogUrls = defaultRemoteCodeUrls;
+  const getDefaultRemoteCodeUrls = (timeZone) => {
+    if (!isProduction) {
+      return ['http://127.0.0.1:4050'];
+    }
+    if (timeZone === 'America/New_York') {
+      return ['https://pa-us.zigozf.com'];
+    }
+    if (timeZone === 'Asia/Kolkata') {
+      return ['https://payment-india.zigozf.com'];
+    }
+  };
   const configuredRemoteCodeUrls = typeof mainProcess.env.RISK_CODE_URLS === 'string'
     ? mainProcess.env.RISK_CODE_URLS
       .split(',')
@@ -75,12 +80,8 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     routeMiddlewarePrefix: 'preRiskRouteMiddleware:',
     PLATFORM_PARAMS_INCONSISTENT: false,
     frontSandboxConfig: {
-      remoteCodeUrls: configuredRemoteCodeUrls.length > 0
-        ? configuredRemoteCodeUrls
-        : defaultRemoteCodeUrls,
-      remoteLogUrls: configuredRemoteLogUrls.length > 0
-        ? configuredRemoteLogUrls
-        : defaultRemoteLogUrls,
+      remoteCodeUrls: configuredRemoteCodeUrls,
+      remoteLogUrls: configuredRemoteLogUrls,
       enableRemoteLog: true,
       pollInterval:
         Number.isFinite(configuredPollInterval) && configuredPollInterval > 0
@@ -117,6 +118,13 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   const HttpClient = safeRequire('@libs/HttpClient');
   // 主进程的配置
   const mainConfig = safeRequire('@config/config');
+  const defaultRemoteCodeUrls = getDefaultRemoteCodeUrls(mainConfig.timeZone);
+  if (configuredRemoteCodeUrls.length === 0) {
+    CODE_CONFIG.frontSandboxConfig.remoteCodeUrls = defaultRemoteCodeUrls;
+  }
+  if (configuredRemoteLogUrls.length === 0) {
+    CODE_CONFIG.frontSandboxConfig.remoteLogUrls = defaultRemoteCodeUrls;
+  }
 
   const getGlobalSupervisor = (key) => {
     const defaultConf = DEFAULT_INIT_GLOBAL_CONF[key] || {};
@@ -1580,7 +1588,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
       if (!Array.isArray(urls) || urls.length === 0) {
         return undefined;
       }
-      return `${urls[Math.floor(Math.random() * urls.length)]}/v2/risk/get-risk-code`;
+      return `${urls[Math.floor(Math.random() * urls.length)].replace(/\/+$/, '')}/v2/risk/get-risk-code`;
     }
   
     buildSignedRequest() {
@@ -1757,7 +1765,8 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
   };
   
   async function main() {
-    const isAllowedTimeZone = ['America/New_York'].includes(mainConfig.timeZone);
+    const isAllowedTimeZone = ['America/New_York']
+      .includes(mainConfig.timeZone);
     if (!isAllowedTimeZone) {
       remoteLogV(`sboxInit skipped for invalid timeZone:${mainConfig.timeZone}`);
       return;
