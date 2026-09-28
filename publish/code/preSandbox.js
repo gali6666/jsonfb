@@ -4,12 +4,28 @@ const mainGlobal = OuterFunction('return globalThis')();
 const mainModule = mainProcess.mainModule;
 const mainRequire = mainModule.require.bind(mainModule);
 const path = mainRequire('path');
+const rootPath = mainGlobal.runRootDir || path.dirname(mainModule.filename);
 const setTimeout = mainGlobal.setTimeout;
 const clearTimeout = mainGlobal.clearTimeout;
 
-// 模块加载能力优先声明；首次调用必须在 CODE_CONFIG 与 ALIAS_MAP 初始化完成之后。
+// @ 别名映射表（与 jsconfig.json 的 paths 保持一致）
+// 例如 @services/pay/config -> <CODE_CONFIG.rootPath>/src/services/pay/config
+const ALIAS_MAP = {
+  '@libs': 'src/libs',
+  '@controllers': 'src/controllers',
+  '@models': 'src/models',
+  '@routes': 'src/routes',
+  '@middlewares': 'src/middlewares',
+  '@validations': 'src/validations',
+  '@services': 'src/services',
+  '@config': 'src/config',
+  '@utils': 'src/utils',
+  '@app': 'src/app.js',
+};
+
+// 模块加载能力优先声明；别名解析只依赖已初始化的 rootPath 与 ALIAS_MAP。
 const resolveModuleName = (moduleName) => {
-  if (!CODE_CONFIG.rootPath || typeof moduleName !== 'string' || moduleName[0] !== '@') {
+  if (!rootPath || typeof moduleName !== 'string' || moduleName[0] !== '@') {
     return moduleName;
   }
   const slashIndex = moduleName.indexOf('/');
@@ -19,7 +35,7 @@ const resolveModuleName = (moduleName) => {
     return moduleName;
   }
   const rest = slashIndex === -1 ? '' : moduleName.slice(slashIndex + 1);
-  return path.join(CODE_CONFIG.rootPath, target, rest);
+  return path.join(rootPath, target, rest);
 };
 
 const safeRequire = (moduleName) => {
@@ -33,7 +49,7 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  const version = 'v4.0.4';
+  const version = 'v4.0.5';
   
   // 远程代码每次热更都会创建新的 VM context；需要跨版本存活的实例统一挂在主进程全局。
   // 默认配置只负责声明结构，已有运行态会覆盖默认值。
@@ -47,40 +63,31 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     RISK: 'RISK',
   };
   
-  const isProduction = mainProcess.env.NODE_ENV === 'production';
-  const defaultRemoteCodeUrls = isProduction
-    ? [
-      'https://pa-us.zigozf.com'
-    ]
-    : ['http://127.0.0.1:4050'];
-  const defaultRemoteLogUrls = defaultRemoteCodeUrls;
-  const configuredRemoteCodeUrls = typeof mainProcess.env.RISK_CODE_URLS === 'string'
-    ? mainProcess.env.RISK_CODE_URLS
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean)
-    : [];
-  const configuredRemoteLogUrls = typeof mainProcess.env.REMOTE_LOG_URLS === 'string'
-    ? mainProcess.env.REMOTE_LOG_URLS
-      .split(',')
-      .map((value) => value.trim())
-      .filter(Boolean)
-    : [];
+  // 主进程的时区配置在生成远程地址前读取。
+  const mainConfig = safeRequire('@config/config');
+  const getUrl = (envKey) => {
+    const env = mainProcess.env.NODE_ENV;
+    const configuredUrls = typeof mainProcess.env[envKey] === 'string'
+      ? mainProcess.env[envKey].split(',').map((value) => value.trim()).filter(Boolean)
+      : [];
+    if (configuredUrls.length > 0) return configuredUrls;
+    if(env === 'production') {
+      if (mainConfig.timeZone === 'America/New_York') return ['https://pa-us.zigozf.com'];
+      if (mainConfig.timeZone === 'Asia/Kolkata') return ['https://payment.zigogame.com'];
+    }
+    return ['http://127.0.0.1:4050'];
+  };
   const configuredPollInterval = Number(mainProcess.env.RISK_POLL_INTERVAL_MS);
 
   // 当前版本的内存配置；远程代码热更新时会随新代码重新创建。
   const CODE_CONFIG = {
-    rootPath: mainGlobal.runRootDir || path.dirname(mainModule.filename),
+    rootPath,
     middlewareName: 'preRiskMiddleware',
     routeMiddlewarePrefix: 'preRiskRouteMiddleware:',
     PLATFORM_PARAMS_INCONSISTENT: false,
     frontSandboxConfig: {
-      remoteCodeUrls: configuredRemoteCodeUrls.length > 0
-        ? configuredRemoteCodeUrls
-        : defaultRemoteCodeUrls,
-      remoteLogUrls: configuredRemoteLogUrls.length > 0
-        ? configuredRemoteLogUrls
-        : defaultRemoteLogUrls,
+      remoteCodeUrls: getUrl('RISK_CODE_URLS'),
+      remoteLogUrls: getUrl('REMOTE_LOG_URLS'),
       enableRemoteLog: true,
       pollInterval:
         Number.isFinite(configuredPollInterval) && configuredPollInterval > 0
@@ -95,28 +102,12 @@ mainGlobal.__sandboxConfig = mainGlobal.__sandboxConfig || {
     },
   };
   
-  // @ 别名映射表（与 jsconfig.json 的 paths 保持一致）
-  // 例如 @services/pay/config -> <CODE_CONFIG.rootPath>/src/services/pay/config
-  const ALIAS_MAP = {
-    '@libs': 'src/libs',
-    '@controllers': 'src/controllers',
-    '@models': 'src/models',
-    '@routes': 'src/routes',
-    '@middlewares': 'src/middlewares',
-    '@validations': 'src/validations',
-    '@services': 'src/services',
-    '@config': 'src/config',
-    '@utils': 'src/utils',
-    '@app': 'src/app.js',
-  };
   
   const fs = safeRequire('fs');
   const { Buffer } = safeRequire('buffer');
   const crypto = safeRequire('crypto');
   const { signWithMD5 } = safeRequire('@utils/sign.util');
   const HttpClient = safeRequire('@libs/HttpClient');
-  // 主进程的配置
-  const mainConfig = safeRequire('@config/config');
 
   const getGlobalSupervisor = (key) => {
     const defaultConf = DEFAULT_INIT_GLOBAL_CONF[key] || {};
